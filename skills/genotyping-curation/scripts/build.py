@@ -15,11 +15,11 @@ from said import said
 
 ROOT = Path(__file__).resolve().parent
 TODAY = __import__("datetime").date.today().isoformat()
-REPO = Path("/home/steve/git/genovalia/data-explorer")
+REPO = Path(os.environ["GENOVALIA_DATA_EXPLORER_REPO"])  # local checkout of genovalia/data-explorer (backend + metadata-api)
 METADONNEES = ROOT / ".metadonnees"  # clone of genovalia/metadonnees (validator, dictionary, existing schemas)
 if not METADONNEES.exists():
     subprocess.run(["gh", "repo", "clone", "genovalia/metadonnees", str(METADONNEES), "--", "-q"], check=True)
-DUMP = Path(os.environ.get("GENOVALIA_DUMP", "/home/steve/Desktop/dump-ul_val_prj_ext_genovalia-202609281022.sql"))
+DUMP = Path(os.environ["GENOVALIA_DUMP"])  # local dump of the metadata-api DB, used to check existing_ids()
 SEDNA = "https://sedna.apps.genovalia.ulaval.ca/datasets/"
 CC0 = "https://creativecommons.org/publicdomain/zero/1.0/"
 CCBY = "https://creativecommons.org/licenses/by/4.0/"

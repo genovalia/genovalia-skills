@@ -1,6 +1,6 @@
 """Fetch open-access papers (PDF, JATS XML, supplementary zip) into <id>/raw/papers/."""
 import pathlib, requests
-H = {"User-Agent": "Mozilla/5.0 (genovalia data curation; steve.vissault@crchudequebec.ulaval.ca)"}
+H = {"User-Agent": "Mozilla/5.0 (genovalia data curation; curation@genovalia.ulaval.ca)"}
 PMC = {"prusal1": "PMC11536197", "anogla1": "PMC9234632", "picsit1": "PMC10989875",
        "triaes1": "PMC10230752", "picgla2": "PMC4181072"}
 BIORXIV = {"malvil1": "782201v1", "salfon1": "660621v1", "homame1": "2020.01.28.923490v1", "picmar2": "2025.10.30.685617v1"}

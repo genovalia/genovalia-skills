@@ -9,7 +9,7 @@ import requests
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "triage" / "meta"; OUT.mkdir(parents=True, exist_ok=True)
-S = requests.Session(); S.headers["User-Agent"] = "genovalia-curation (steve.vissault@crchudequebec.ulaval.ca)"
+S = requests.Session(); S.headers["User-Agent"] = "genovalia-curation (curation@genovalia.ulaval.ca)"
 
 
 def slug(doi): return re.sub(r"[^A-Za-z0-9]+", "_", doi)

@@ -3,7 +3,7 @@
 Tu prépares et valides des jeux de génotypage publics pour data-explorer et metadata-api de Genovalia, selon la méthode déjà verrouillée. **Préparer et valider seulement : aucune injection** (ni BD, ni API, ni Pydio).
 
 ## À lire d'abord
-- `/home/steve/git/genovalia/data-explorer/.claude/skills/genotyping-curation/SKILL.md` et `references/lessons.md` (méthode, règles tirées des bugs passés, taxonomie des problèmes).
+- `~/genovalia-skills/skills/genotyping-curation/SKILL.md` et `references/lessons.md` (méthode, règles tirées des bugs passés, taxonomie des problèmes).
 - `~/genovalia-injection/build.py` : helpers (`P`, `CC0`, `CCBY`, `link`, `write_vcf`, `letters_to_rows`, `_dna`, `_vcf_samples`, `ATTR`, `UCUM`, `vcf_stats`) et exemples complets (`prepare_malvil1`, `prepare_anogla1`, `prepare_salfon1`, `prepare_picgla2`, `prepare_triaes1` et leurs entrées `DATASETS`). Copie leur style.
 - Métadonnées de dépôt déjà récupérées : `~/genovalia-injection/triage/meta/<doi avec _>.json` (fichiers et tailles, auteurs + ORCID, licence, travaux liés, résumé). Ne rappelle pas l'API Dryad pour ça.
 
@@ -28,7 +28,7 @@ Tu prépares et valides des jeux de génotypage publics pour data-explorer et me
    Statuts : ok = Réglé, mit = Contourné, open = Ouvert ; 1 = bloquant. Phrases simples, chiffres exacts.
 
 ## Téléchargements
-- Téléchargement de fichiers Dryad = authentification requise (401/403). Cherche la copie Zenodo par titre exact : `https://zenodo.org/api/records?q=title:"<titre>"&all_versions=1`, puis `https://zenodo.org/api/records/<id>/files/<nom>/content`. Sinon une copie Borealis/UBC (`https://borealisdata.ca/api/access/datafile/<id>?format=original`). Sinon `MANUAL` + problème ouvert bloquant « données à récupérer » (garde l'URL : Steve ira les chercher).
+- Téléchargement de fichiers Dryad = authentification requise (401/403). Cherche la copie Zenodo par titre exact : `https://zenodo.org/api/records?q=title:"<titre>"&all_versions=1`, puis `https://zenodo.org/api/records/<id>/files/<nom>/content`. Sinon une copie Borealis/UBC (`https://borealisdata.ca/api/access/datafile/<id>?format=original`). Sinon `MANUAL` + problème ouvert bloquant « données à récupérer » (garde l'URL : la personne qui a demandé la préparation ira les chercher).
 - Dryad et Zenodo renvoient 429 si on insiste : attends et réessaie (10 s, 30 s, 60 s…), jamais de boucle serrée.
 - Plafond : ne télécharge pas de fichier > 2 Go ; prends le VCF filtré/analysé plutôt que les appels bruts. Si le seul fichier de génotypes dépasse 2 Go, arrête-toi pour ce jeu et signale-le.
 - Mémoire limitée (plusieurs agents en parallèle) : lis les gros fichiers en flux, pas de pandas sur un fichier > 500 Mo.
@@ -47,7 +47,7 @@ Tu prépares et valides des jeux de génotypage publics pour data-explorer et me
 Court. Un tableau : ID, espèce, individus × SNPs, bloquant (oui/non, une phrase si oui). Sous le tableau, seulement les points qui ont demandé une décision (choix de fichier, fusion ou non, ID changé) et les documents à récupérer (URL). Le détail complet est déjà dans `<id>/QC_REPORT.md` et `<id>/issues.json` : ne le répète pas.
 
 ## Limites du chargeur : jamais un motif d'exclusion
-Une limite connue du code de data-explorer (chargeur VCF, format de stockage des génotypes, etc.) n'est **jamais** une raison d'écarter un jeu ou de ne pas le préparer. Prépare le jeu normalement, signale la limite comme un problème (« mit » si contourné, « open » sinon), et laisse Steve décider. Ne fais pas toi-même le calcul « est-ce que le chargeur actuel saura le lire ? » pour décider si tu prépares un jeu.
+Une limite connue du code de data-explorer (chargeur VCF, format de stockage des génotypes, etc.) n'est **jamais** une raison d'écarter un jeu ou de ne pas le préparer. Prépare le jeu normalement, signale la limite comme un problème (« mit » si contourné, « open » sinon), et laisse la personne qui a demandé la préparation décider. Ne fais pas toi-même le calcul « est-ce que le chargeur actuel saura le lire ? » pour décider si tu prépares un jeu.
 
 ## Matrices à convertir (jeux B)
 - Prouve le codage avant de convertir (règle du skill) : README, article, ou recoupement avec un autre fichier du dépôt. Écris la preuve dans `decisions`.

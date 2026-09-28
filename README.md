@@ -31,6 +31,19 @@ Le lien symbolique pointe toujours vers la version à jour du clone : aucune aut
 
 Ouvrir Claude Code dans n'importe quel projet et lancer `/skill-doctor` (ou vérifier que le skill apparaît dans la liste des skills disponibles au démarrage de la session).
 
+## Installation dans Claude Desktop
+
+Claude Desktop (et claude.ai) utilise le même format `SKILL.md` que Claude Code, mais l'installe via l'interface plutôt qu'un lien symbolique : pas d'accès au système de fichiers local, donc on lui fournit une archive.
+
+```bash
+cd ~/genovalia-skills/skills/genotyping-curation
+zip -r /tmp/genotyping-curation.zip .
+```
+
+Puis dans Claude Desktop : **Réglages → Capacités (Capabilities) → Skills → Charger un skill (Upload skill)**, sélectionner `/tmp/genotyping-curation.zip`. Le libellé exact du menu peut varier selon la version de l'application ; chercher « Skills » dans les réglages si ce chemin a changé.
+
+Mise à jour : refaire le zip après un `git pull` dans `~/genovalia-skills`, puis re-charger — Claude Desktop remplace le skill existant du même nom.
+
 ## Ajouter un nouveau skill
 
 1. `skills/<nom-du-skill>/SKILL.md` + ressources (`references/`, `scripts/`).

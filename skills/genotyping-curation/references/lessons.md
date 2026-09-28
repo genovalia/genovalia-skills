@@ -41,16 +41,16 @@ Concrete cases behind the rules in SKILL.md. Read the entry for a format before 
 
 ## Platform facts verified in code
 
-Informational only — **never** a reason to skip preparing a dataset. Prepare it, note the limitation as a problem, let Steve decide.
+Informational only — **never** a reason to skip preparing a dataset. Prepare it, note the limitation as a problem, let the requester decide.
 
 - `data-explorer-backend/app/services/vcf_parser.py`: strips `##` lines except fileformat, drops non-digit POS, reads the file as UTF-8 text (so `.vcf.gz` fails despite being "accepted"), requires every VCF sample to exist in `dataset_sample.sample_id`, upserts variants on (chrom, pos).
 - `data-explorer-backend/app/repository/dataset.py`: samples CSV must have `id` (lowercase), no UTF-8 BOM; lowercases string values except id; capitalises country and organism.
 - `metadata-api/app/services/dcat.py` reads `dct:relation` and `dct:*` inside distributions → declare `dct` in `@context`.
 - OCA bundle `v` = `OCAS11JSON` + hex length of the compact bundle JSON + `_`; package, bundle, capture base, overlays and ADC extension overlays each carry a SAID.
 
-## Documents fetched manually by Steve
+## Documents fetched manually by the requester
 
-- Steve drops them in `~/Downloads` with the server's generic names (`media-1.docx`, `media-1 (1).docx`, `media-4.xlsx`…). Identify each one by its content (title paragraph, table headers), never by name, then copy it to the `dest` listed in `MANUAL_DOWNLOADS` and remove that entry.
+- The requester drops them in `~/Downloads` with the server's generic names (`media-1.docx`, `media-1 (1).docx`, `media-4.xlsx`…). Identify each one by its content (title paragraph, table headers), never by name, then copy it to the `dest` listed in `MANUAL_DOWNLOADS` and remove that entry.
 - Re-read every open issue against the new document and change its status explicitly: lot 1 closed malvil1 units (Table S14), salfon1 environment (Suppl. Table 1 xlsx, coordinates identical to the PDF), picgla2 site/years/units (Heredity), and gave picmar2 an independent coordinate check (1467/1467).
 - A data availability statement ("available in the manuscript") does not guarantee per-individual data: Horticulturae 2025 only shows distributions. Keep the issue open and name the contact.
 - When a paper's filter uses a field that is not deposited (GenTrain score), reproduce the other filters and report the count instead of forcing the published number.

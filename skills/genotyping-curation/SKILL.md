@@ -1,13 +1,13 @@
 ---
 name: genotyping-curation
-description: Prepare and validate public genotyping datasets (VCF or genotype matrices from Dryad, Zenodo, Borealis…) for injection into Genovalia's data-explorer and metadata-api - per-individual samples CSV keyed on VCF IDs, DCAT JSON-LD, Semantic Engine OCA bundle, mapper, QC report and issue summary. Use when Steve asks to add, curate, prepare or validate a new genotyping dataset for Genovalia/Sedna, extend the "lot" of public datasets, or re-run the curation.
+description: Prepare and validate public genotyping datasets (VCF or genotype matrices from Dryad, Zenodo, Borealis…) for injection into Genovalia's data-explorer and metadata-api - per-individual samples CSV keyed on VCF IDs, DCAT JSON-LD, Semantic Engine OCA bundle, mapper, QC report and issue summary. Use when the requester asks to add, curate, prepare or validate a new genotyping dataset for Genovalia/Sedna, extend the "lot" of public datasets, or re-run the curation.
 ---
 
 # Genotyping dataset curation (Genovalia)
 
-Locked method, established on lot 1 (9 datasets, 2026-09-28). Follow it as written; deviations must be stated to Steve up front.
+Locked method, established on lot 1 (9 datasets, 2026-09-28). Follow it as written; deviations must be stated to the requester up front.
 
-**Scope: prepare and validate only.** Never inject into data-explorer, metadata-api or the database. Uploading to Pydio or publishing the summary artifact happens only when Steve asks.
+**Scope: prepare and validate only.** Never inject into data-explorer, metadata-api or the database. Uploading to Pydio or publishing the summary artifact happens only when the requester asks.
 
 ## Workspace
 
@@ -16,7 +16,7 @@ Locked method, established on lot 1 (9 datasets, 2026-09-28). Follow it as writt
 - New datasets (lot 2+) go in **one module per dataset, `prep/<id>.py`** (`FILES`, optional `MANUAL`, `CFG(h)`, `prepare(raw, out, h)` with `h` = the build module); `build.py` and `fetch.py` load them. Never add new datasets inside `build.py`: modules let several agents work in parallel without conflicts.
 - Whole catalogue: `triage.py` caches repository metadata of every record of `catalogue.json` in `triage/meta/`; `triage/tiers.tsv` classifies each record (DONE, EXISTS, A = VCF provided, B = matrix to convert, C = archive to inspect, MSAT, OUT, DUP, RESTRICTED) and `triage/ids.tsv` assigns IDs. Parallel agents get `references/agent_brief.md` plus their list of DOI → ID.
 - venv: `python3 -m venv .venv && .venv/bin/pip install pandas openpyxl blake3 cyvcf2 requests pypdf python-docx questionary`.
-- `build.py` clones `genovalia/metadonnees` into `.metadonnees/` (DCAT validator, keyword dictionary, existing schemas) and reads the DB dump from `$GENOVALIA_DUMP` (ask Steve for the latest dump if the default path is gone).
+- `build.py` clones `genovalia/metadonnees` into `.metadonnees/` (DCAT validator, keyword dictionary, existing schemas), reads the DB dump from `$GENOVALIA_DUMP` (ask the requester for the latest dump), and reads `$GENOVALIA_DATA_EXPLORER_REPO` (local checkout of `genovalia/data-explorer`, used to import `metadata-api`'s and `data-explorer-backend`'s own OCA/DCAT code for validation). Set both env vars before running.
 
 Per-dataset output (flat, no sub-folders except `raw/`):
 ```
@@ -64,6 +64,28 @@ Per-dataset output (flat, no sub-folders except `raw/`):
 
 ## Deliverables beyond the files
 
-- Summary artifact (lot 1): https://claude.ai/artifact/FS1nBJ5KqjdgfmtoPyWXkz - republish it from its URL with the new datasets rather than creating a new page.
-- Pydio: `pydio_upload.py <workspace/path> [ids] [--dry-run]` (WebDAV, env `PYDIO_URL`, `PYDIO_USERNAME`, `PYDIO_TOKEN`, same convention as CaribouGenotype). Run it only on Steve's request; dry-run first.
-- Tell Steve which keywords must be added to metadonnees `dictionary.json` and which platform findings are new.
+- Tell the requester which keywords must be added to metadonnees `dictionary.json` and which platform findings are new.
+
+### Pydio upload
+
+`scripts/pydio_upload.py <workspace/path> [dataset_id ...] [--dry-run]` uploads every prepared dataset (VCF, CSV, DCAT/OCA/mapper JSON, QC report, raw papers) over WebDAV, keeping the same folder layout the summary artifact links to. Only the requester runs this — never search for or read the credentials yourself, and never invoke it unprompted.
+
+```bash
+export PYDIO_URL="https://<pydio-host>"        # e.g. https://pydio.apps.genovalia.ulaval.ca
+export PYDIO_USERNAME="<username>"
+export PYDIO_TOKEN="<personal access token>"    # not the account password
+.venv/bin/python pydio_upload.py "<workspace>/<path>" --dry-run   # list what would upload, verify the byte sizes
+.venv/bin/python pydio_upload.py "<workspace>/<path>"             # then actually upload
+```
+
+Re-runnable: a file already on Pydio is skipped only when its remote byte size matches the local one exactly, so a partial or changed file is always re-uploaded, never silently kept stale. Limit to specific datasets by appending their IDs after the path.
+
+### Summary artifact update
+
+The curated dataset list lives in a published artifact (one row per dataset, searchable/paginated tables, Pydio links per file). To refresh it after new datasets or new issue resolutions:
+1. Recompute `issues.json`-derived stats (individuals, SNPs, issue counts by status) across all prepared datasets.
+2. Regenerate the artifact's embedded dataset array from that data.
+3. Republish to the **same artifact URL** (pass it explicitly) so the link stays stable — never publish without a URL when updating an existing artifact, or it creates a duplicate page.
+4. Validate the embedded script's syntax before publishing (e.g. `node -e` on the extracted `<script>` block).
+
+The artifact is private by default: remind the requester to share it (via the page's Share menu) with anyone else who needs to open the link.
