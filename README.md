@@ -6,30 +6,30 @@ Claude Code skills partagés entre les projets Genovalia. Un skill par sous-doss
 
 - [`genotyping-curation`](skills/genotyping-curation/SKILL.md) — préparation et validation des jeux de génotypage publics (DCAT, OCA/Semantic Engine, VCF, CSV data-explorer).
 
-## Installation locale
+## Installation locale (Claude Code)
 
-Un skill de ce dépôt devient disponible dans Claude Code par un lien symbolique vers `~/.claude/skills/`, ce qui le rend utilisable dans **tous** les projets ouverts sur la machine, peu importe le dépôt de code courant.
+**En une commande**, à coller dans un terminal :
 
 ```bash
-git clone git@github.com:genovalia/genovalia-skills.git ~/genovalia-skills
+curl -fsSL https://raw.githubusercontent.com/genovalia/genovalia-skills/master/install.sh | bash
+```
+
+Ça télécharge tous les skills de ce dépôt et les rend disponibles dans **n'importe quel projet** ouvert avec Claude Code sur cette machine. Pour vérifier : ouvrir Claude Code dans un projet et voir si le skill apparaît dans sa liste au démarrage.
+
+Pour mettre à jour plus tard : relancer exactement la même commande.
+
+<details>
+<summary>Ce que fait la commande, en détail (si tu préfères le faire main dans la main)</summary>
+
+```bash
+git clone git@github.com:genovalia/genovalia-skills.git ~/genovalia-skills   # ou : cd ~/genovalia-skills && git pull, si déjà cloné
 
 mkdir -p ~/.claude/skills
 ln -s ~/genovalia-skills/skills/genotyping-curation ~/.claude/skills/genotyping-curation
 ```
 
-Répéter le `ln -s` pour chaque nouveau skill ajouté à ce dépôt.
-
-### Mise à jour
-
-```bash
-cd ~/genovalia-skills && git pull
-```
-
-Le lien symbolique pointe toujours vers la version à jour du clone : aucune autre étape n'est nécessaire.
-
-### Vérifier que Claude Code le voit
-
-Ouvrir Claude Code dans n'importe quel projet et lancer `/skill-doctor` (ou vérifier que le skill apparaît dans la liste des skills disponibles au démarrage de la session).
+Le lien symbolique pointe toujours vers la version à jour du clone : un `git pull` dans `~/genovalia-skills` suffit ensuite, pas besoin de refaire le lien.
+</details>
 
 ## Installation dans Claude Desktop
 
