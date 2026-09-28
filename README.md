@@ -1,6 +1,6 @@
 # genovalia-skills
 
-Claude Code skills partagés entre les projets Genovalia (`ulaval-recherche`). Un skill par sous-dossier de `skills/` : conventions, scripts et leçons apprises, indépendants de tout dépôt de code produit.
+Claude Code skills partagés entre les projets Genovalia. Un skill par sous-dossier de `skills/` : conventions, scripts et leçons apprises, indépendants de tout dépôt de code produit.
 
 ## Skills disponibles
 
@@ -11,7 +11,7 @@ Claude Code skills partagés entre les projets Genovalia (`ulaval-recherche`). U
 Un skill de ce dépôt devient disponible dans Claude Code par un lien symbolique vers `~/.claude/skills/`, ce qui le rend utilisable dans **tous** les projets ouverts sur la machine, peu importe le dépôt de code courant.
 
 ```bash
-git clone git@github.com:ulaval-recherche/genovalia-skills.git ~/genovalia-skills
+git clone git@github.com:genovalia/genovalia-skills.git ~/genovalia-skills
 
 mkdir -p ~/.claude/skills
 ln -s ~/genovalia-skills/skills/genotyping-curation ~/.claude/skills/genotyping-curation
