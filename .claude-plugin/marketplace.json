@@ -1,0 +1,14 @@
+{
+  "name": "genovalia-skills",
+  "owner": { "name": "Genovalia" },
+  "metadata": { "description": "Claude Code skills partagés entre les projets Genovalia." },
+  "plugins": [
+    {
+      "name": "genovalia",
+      "description": "Skills Genovalia : curation des jeux de génotypage publics (DCAT, OCA, VCF, CSV data-explorer).",
+      "source": "./",
+      "strict": false,
+      "skills": ["./skills/genotyping-curation"]
+    }
+  ]
+}
