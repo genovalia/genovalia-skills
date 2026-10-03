@@ -353,12 +353,16 @@ def metadata_api(path, **params):
         return None
 
 
-def existing_ids():
-    """IDs already taken: datasets loaded in metadata-api, metadonnees catalogue.json and dataset
-    folders, plus the workspace's own dataset folders (no DB dump any more)."""
-    cat = json.loads((METADONNEES / "catalogue.json").read_text())
-    ids = {e["id"] for e in cat.get("content", [])} | {f.parent.name for f in METADONNEES.glob("*/dcat.json")}
-    ids |= {p.name for p in ROOT.iterdir() if p.is_dir() and ID_RE.match(p.name)}
+def existing_ids(workspace=True):
+    """IDs already taken: datasets loaded in metadata-api and metadonnees dataset folders, plus
+    (workspace=True, for choosing a new ID) the workspace's own dataset folders (no DB dump any more).
+    metadonnees replaced catalogue.json by catalog.json (2026-10-01), which no longer lists datasets:
+    the old file is read only if present."""
+    ids = {f.parent.name for f in METADONNEES.glob("*/dcat.json")}
+    if (old := METADONNEES / "catalogue.json").exists():
+        ids |= {e["id"] for e in json.loads(old.read_text()).get("content", [])}
+    if workspace:
+        ids |= {p.name for p in ROOT.iterdir() if p.is_dir() and ID_RE.match(p.name)}
     page = 1
     while (lst := metadata_api("datasets", page=page, page_size=100)) and lst["content"]:
         ids |= {d["identifier"] for d in lst["content"]}
@@ -473,9 +477,13 @@ def run_qc(ds_id, cfg, res, st):
     if high: rep += ["", f"## Individus > {MISSING_RATE_FLAG:.0%} manquants", "", ", ".join(f"{k} ({smiss[k]:.0%})" for k in high[:200])]
     if het_out: rep += ["", "## Individus à hétérozygotie élevée", "", ", ".join(f"{k} ({st['sample_het'][k]:.1%})" for k in het_out)]
     rep += ["", "## Colonnes du CSV", "", "| Colonne | Type OCA | Unité | Non-vides | Valeurs distinctes |", "|---|---|---|---|---|"]
-    types = {p["name"]: p for p in props}
+    # Type and unit read from the OCA bundle itself (the metadata-api/data-explorer parsers that gave `props` were dropped)
+    bundle = oca["oca_bundle"]["bundle"]
+    types = bundle["capture_base"]["attributes"]
+    unit_ov = bundle["overlays"].get("unit", {})
+    units = (unit_ov[0] if isinstance(unit_ov, list) else unit_ov).get("attribute_unit", {}) if unit_ov else {}
     for c in df.columns:
-        rep.append(f"| {c} | {types.get(c, {}).get('type')} | {types.get(c, {}).get('unit') or ''} | {df[c].notna().sum()} | {df[c].nunique()} |")
+        rep.append(f"| {c} | {types.get(c)} | {units.get(c, '')} | {df[c].notna().sum()} | {df[c].nunique()} |")
     rep += ["", "## En-tête du VCF (extrait)", "", "```", *st["meta"][:15], "```", ""]
     return row, blocking, minor, "\n".join(rep)
 
@@ -1061,7 +1069,7 @@ def process(ds_id, cfg, taken):
 def main(only):
     (ROOT / ".tmp").mkdir(exist_ok=True)
     assert not verify_saids(json.loads((METADONNEES / "lymdis1/oca.json").read_text())), "SAID self-test failed"
-    taken = existing_ids()
+    taken = existing_ids(workspace=False)  # the workspace folders are the datasets being built
     # metadonnees dropped dictionary.json (2026-09-29): compare with the keywords already in use
     # (metadonnees DCATs + metadata-api /keywords and /dictionary)
     dictionary = {k for f in METADONNEES.glob("*/dcat.json") for k in json.loads(f.read_text()).get("dcat:keyword", [])}
