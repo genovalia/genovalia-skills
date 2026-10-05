@@ -5,6 +5,7 @@ Claude Code skills partagés entre les projets Genovalia. Un skill par sous-doss
 ## Skills disponibles
 
 - [`genotyping-curation`](skills/genotyping-curation/SKILL.md) — préparation et validation des jeux de génotypage publics (DCAT, OCA/Semantic Engine, VCF, CSV data-explorer).
+- [`openshift-deploy`](skills/openshift-deploy/SKILL.md) — standard de déploiement OpenShift (manifestes `oc/dev`, `oc/prod`, RBAC du compte CI, `deploy.py`), workflows GitHub et variables/secrets des GitHub Environments : scaffolding d'un nouveau projet et audit d'un dépôt existant.
 
 ## Installation locale
 

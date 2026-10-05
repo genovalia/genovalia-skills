@@ -1,0 +1,49 @@
+name: Version bump check
+
+on:
+  pull_request:
+    branches: [dev, main]
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Vérifier que la version a été augmentée
+        run: |
+          set -euo pipefail
+
+          BASE_VERSION=$(git show "origin/${{ github.base_ref }}:pyproject.toml" | grep -m1 '^version = ' | sed -E 's/version = "(.*)"/\1/')
+          HEAD_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+
+          echo "Version sur ${{ github.base_ref }} : $BASE_VERSION"
+          echo "Version sur cette PR         : $HEAD_VERSION"
+
+          python3 - "$BASE_VERSION" "$HEAD_VERSION" <<'EOF'
+          import sys
+          base = tuple(int(x) for x in sys.argv[1].split("."))
+          head = tuple(int(x) for x in sys.argv[2].split("."))
+          if head <= base:
+              print(
+                  f"::error::La version dans pyproject.toml doit être augmentée par rapport à "
+                  f"{sys.argv[1]} (poetry version patch/minor/major). Version actuelle : {sys.argv[2]}."
+              )
+              sys.exit(1)
+          EOF
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: "github-ci"
+            text: ":x: *${{ github.event.repository.name }}* — `${{ github.workflow }}` failed on <${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}> (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|logs>)"
