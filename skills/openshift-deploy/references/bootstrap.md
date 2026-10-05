@@ -18,7 +18,7 @@ oc login api.ul-pca-pr-ul01.ulaval.ca:6443        # personal account
 for ENV in dev prod; do
   NS=$([ "$ENV" = dev ] && echo ul-val-genovalia-dv || echo ul-val-genovalia-pr)
   oc apply -n "$NS" -f oc/$ENV/service-account.yaml -f oc/$ENV/role.yaml \
-                    -f oc/$ENV/role-binding.yaml -f oc/$ENV/ci-token.yaml
+                    -f oc/$ENV/role-binding.yaml
 done
 ```
 
@@ -38,19 +38,23 @@ gh api -X POST repos/$REPO/environments/prod/deployment-branch-policies -f name=
 
 ## 3. OpenShift token into each Environment
 
-The token Secret is filled asynchronously by OpenShift: check it is non-empty, then pipe it straight into GitHub so it is never printed.
+Bound tokens (`TokenRequest`), as in the Confluence page "Comptes de service GitHub CI pour auto-déploiement": stored nowhere in the cluster, valid 365 days, **never renewed automatically**. Pipe each one straight into GitHub so it is never displayed.
 
 ```bash
 for ENV in dev prod; do
   NS=$([ "$ENV" = dev ] && echo ul-val-genovalia-dv || echo ul-val-genovalia-pr)
-  TOKEN=$(oc get secret github-ci-$APP-token -n "$NS" -o jsonpath='{.data.token}' | base64 -d)
-  [ -n "$TOKEN" ] || { echo "token not issued yet in $NS"; break; }
-  printf %s "$TOKEN" | gh secret set OPENSHIFT_TOKEN --env "$ENV" --repo "$REPO"
+  oc create token github-ci-$APP -n "$NS" --duration=8760h \
+    | gh secret set OPENSHIFT_TOKEN --env "$ENV" --repo "$REPO"
 done
-unset TOKEN
 ```
 
-Rotation (leak, or someone left): `oc delete secret github-ci-$APP-token -n <ns>`, re-apply `ci-token.yaml`, re-run this step. The old token stops working when its Secret is deleted.
+### Rotation
+
+Yearly per app and per env, or at once on a suspected leak (token pasted somewhere, printed in a workflow log, compromised Action dependency). Re-run the loop above for the env concerned: the GitHub secret is replaced, other apps are unaffected. `audit.py` warns 30 days before the expected expiry (it dates the token by the GitHub secret's last update) and reports an ERROR after it.
+
+A replaced token stays valid until it expires. To cut a leaked one off immediately, recreate the service account (`oc delete sa github-ci-$APP -n <ns>`, then step 1 and this step): every token bound to the old account dies with it.
+
+Symptom of an expired token: `oc login --token=...` fails with `401` in the Deploy run.
 
 ## 4. Vars and secrets
 
@@ -70,7 +74,20 @@ Delete the files afterwards.
 
 ## 6. Branches
 
-`dev` exists and is the default branch for PRs. On `main` and `dev`, require PRs and the status checks `test` / `build` (test.yml), `version-bump`, and on `main` `check-source-branch` (restrict-main-source.yml).
+`dev` exists and is the default branch for PRs. Protect both (no direct push, PR required) with these required status checks: `test`, `build` (plus `migrate` if scaffolded with `--migrate`) from test.yml, `version-bump`, and on `main` also `check-source-branch` (restrict-main-source.yml).
+
+`main` also requires **1 approving review**. Merging to `main` deploys prod automatically, so the reviewer approves a `dev` -> `main` PR only after checking that this exact version runs correctly on dev.
+
+```bash
+gh api -X PUT repos/$REPO/branches/main/protection --input - <<'JSON'
+{"required_status_checks": {"strict": false, "contexts": ["test", "build", "version-bump", "check-source-branch"]},
+ "enforce_admins": false,
+ "required_pull_request_reviews": {"required_approving_review_count": 1},
+ "restrictions": null}
+JSON
+```
+
+Same call for `dev` without `check-source-branch` and with `"required_pull_request_reviews": null`. Add `"migrate"` to the contexts when the repo has that job.
 
 ## 7. First deploy
 

@@ -3,7 +3,7 @@
 
     scaffold.py <repo-dir> --app NAME --stack python|node --port 8000 \
         [--health /health] [--host-prod HOST] [--host-dev HOST] \
-        [--config KEY,KEY?,...] [--secrets KEY,KEY?,...] [--sentry] [--force]
+        [--config KEY,KEY?,...] [--secrets KEY,KEY?,...] [--sentry] [--migrate] [--force]
 
 A key ending in "?" is optional: the Deploy workflow only sends it when the
 GitHub Environment value is non-empty, so the app's own default stays in force.
@@ -30,7 +30,6 @@ OC_FILES = [
     "service-account.yaml",
     "role.yaml",
     "role-binding.yaml",
-    "ci-token.yaml",
 ]
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 RESERVED = {"OPENSHIFT_CLUSTER", "OPENSHIFT_NAMESPACE", "OPENSHIFT_TOKEN", "SLACK_BOT_TOKEN", "SENTRY_ENVIRONMENT"}
@@ -109,6 +108,7 @@ def main() -> None:
     ap.add_argument("--config", default="", help="ConfigMap keys (GitHub vars)")
     ap.add_argument("--secrets", default="", help="Secret keys (GitHub secrets)")
     ap.add_argument("--sentry", action="store_true", help="pin SENTRY_ENVIRONMENT in the manifests")
+    ap.add_argument("--migrate", action="store_true", help="python: add a test job running alembic migrations on a real Postgres")
     ap.add_argument("--force", action="store_true", help="overwrite existing files")
     a = ap.parse_args()
 
@@ -116,6 +116,8 @@ def main() -> None:
         sys.exit("--app must be kebab-case and must not end in -dev")
     config = parse_keys(a.config, "--config")
     secrets = parse_keys(a.secrets, "--secrets")
+    if a.migrate and a.stack != "python":
+        sys.exit("--migrate is only for --stack python (alembic)")
     if not config:
         sys.exit("--config needs at least one key (the Deployment always reads its ConfigMap)")
     if set(k for k, _ in config) & set(k for k, _ in secrets):
@@ -150,7 +152,8 @@ def main() -> None:
     write(wf / "deploy.yml", render_deploy_yml(a.app, config, secrets), a.force, written)
     write(wf / "restrict-main-source.yml", (TPL / "workflows" / "restrict-main-source.yml").read_text(), a.force, written)
     write(wf / "version-bump.yml", (TPL / "workflows" / f"version-bump-{a.stack}.yml").read_text(), a.force, written)
-    write(wf / "test.yml", (TPL / "workflows" / f"test-{a.stack}.yml").read_text().replace("__APP__", a.app), a.force, written)
+    test = blocks((TPL / "workflows" / f"test-{a.stack}.yml").read_text(), {"migrate": a.migrate, "nomigrate": not a.migrate})
+    write(wf / "test.yml", test.replace("__APP__", a.app), a.force, written)
 
     leftovers = [p for p in written if re.search(r"__[A-Z]+__|@@[A-Z_]+@@|^# (>>>|<<<) ", p.read_text(), re.M)]
     if leftovers:

@@ -31,14 +31,9 @@ ENVIRONMENTS = {
 
 # Bootstrap-only: applied once by hand with elevated credentials (see the
 # openshift-deploy skill), not by this script. The CI service account's Role
-# has nothing on serviceaccounts/roles/rolebindings/its own token Secret, so
-# applying these here would 403 and abort every deploy.
-BOOTSTRAP_ONLY_FILES = {
-    "service-account.yaml",
-    "role.yaml",
-    "role-binding.yaml",
-    "ci-token.yaml",
-}
+# has nothing on serviceaccounts/roles/rolebindings, so applying these here
+# would 403 and abort every deploy.
+BOOTSTRAP_ONLY_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml"}
 
 
 def get_version() -> str:

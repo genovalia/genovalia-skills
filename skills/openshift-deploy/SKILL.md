@@ -7,7 +7,9 @@ description: Genovalia standard for deploying an app to the UL OpenShift cluster
 
 One layout for every deployed repo, so a new project is a scaffold plus a bootstrap, and any repo can be audited against it. Reference implementations: `ovision-api` (backend) and `ovision` (frontend) are the closest; `genovine-*` and `data-explorer-*` follow the same workflow logic but still use one shared namespace (see Legacy).
 
-Decided 2026-10-05: **dev and prod in separate namespaces**, **flat `oc/dev/` + `oc/prod/` manifests** (no Kustomize), **`<name>`, `<name>-service`, `<name>-route` naming**.
+Decided 2026-10-05: **dev and prod in separate namespaces**, **flat `oc/dev/` + `oc/prod/` manifests** (no Kustomize), **`<name>`, `<name>-service`, `<name>-route` naming**, **prod deployed automatically on merge to `main`** (the human gate is the required review of the `dev` -> `main` PR), **CI may create Routes with a custom host** (`routes/custom-host` create, no admin step per new Route).
+
+Confluence ("Comptes de service GitHub CI pour auto-déploiement", "Versionnement, tests et releases", Jul-Aug 2026) predates these choices. Where it says otherwise (shared namespace, manual prod deploy, no Secret or custom-host access for CI, manual git tag), this skill is the newer rule. Its token procedure (`oc create token --duration=8760h`) is kept as is.
 
 ## The standard
 
@@ -15,7 +17,7 @@ Decided 2026-10-05: **dev and prod in separate namespaces**, **flat `oc/dev/` + 
 deploy.py                       templates/deploy.py, only APP differs
 oc/dev/  oc/prod/               one folder per env, *.yaml only
   deployment.yaml service.yaml route.yaml       applied by deploy.py
-  service-account.yaml role.yaml role-binding.yaml ci-token.yaml   bootstrap-only
+  service-account.yaml role.yaml role-binding.yaml   bootstrap-only (namespace admin, once)
 .github/workflows/
   deploy.yml                    push dev -> dev, push main -> prod, manual dispatch
   test.yml                      PR checks (tests + docker build)
@@ -31,7 +33,7 @@ oc/dev/  oc/prod/               one folder per env, *.yaml only
 | Secret | `<name>-secrets` | same |
 | Image | `registre.apps.ul-pca-pr-ul01.ulaval.ca/<ns>/<name>:latest` + `:<version>` | same |
 | Host (default) | `<app>-dev.apps.genovalia.ulaval.ca` | `<app>.apps.genovalia.ulaval.ca` |
-| CI account | `github-ci-<app>` (SA + Role + RoleBinding + token Secret), one per namespace | same |
+| CI account | `github-ci-<app>` (SA + Role + RoleBinding), one per namespace; token from `oc create token --duration=8760h`, rotated yearly | same |
 | Git branch / GitHub Environment | `dev` / `dev` | `main` / `prod` |
 
 GitHub layout:
@@ -42,6 +44,7 @@ GitHub layout:
 | Environment `dev`, `prod` - secrets | `OPENSHIFT_TOKEN` (that namespace's CI token), then every Secret key |
 | Repo (or org) secret | `SLACK_BOT_TOKEN` only |
 | Environment `prod` | deployment branch policy: `main` only |
+| Branch protection | `dev` and `main`: PR + required checks; `main`: 1 approving review |
 
 GitHub is the source of truth for config values: `deploy.yml` re-creates the ConfigMap `<name>` and Secret `<name>-secrets` from the Environment on every deploy, then `deploy.py` builds, pushes, applies `oc/<env>/` (minus the bootstrap files), labels everything with `app.kubernetes.io/version` and restarts the Deployment. A prod deploy from `main` tags `v<version>`. Slack: `deployment-dev`, `deployment-prod`, failures in `github-ci`.
 
@@ -51,8 +54,8 @@ Never: a value in a committed manifest that belongs in GitHub, a secret in a Git
 
 All under `scripts/`, Python stdlib only, run from anywhere.
 
-- `scaffold.py <repo> --app <app> --stack python|node --port N [--health /path] [--host-prod H] [--host-dev H] --config K1,K2,K3? [--secrets S1,S2?] [--sentry]` writes the files above. `K?` = optional key, only sent when set (so an app default is not overridden by `""`). Never overwrites without `--force`.
-- `audit.py <repo> [--app A] [--no-github]` checks manifests, RBAC, deploy.py, workflows and, read-only through `gh api`, the GitHub Environments (missing keys break the deploy, unused keys are drift). Exit 1 on any ERROR.
+- `scaffold.py <repo> --app <app> --stack python|node --port N [--health /path] [--host-prod H] [--host-dev H] --config K1,K2,K3? [--secrets S1,S2?] [--sentry] [--migrate]` writes the files above. `--migrate` (python) adds a test job that applies the alembic migrations to a throwaway Postgres; use it whenever the app has migrations. `K?` = optional key, only sent when set (so an app default is not overridden by `""`). Never overwrites without `--force`.
+- `audit.py <repo> [--app A] [--no-github]` checks manifests, RBAC, deploy.py, workflows and, read-only through `gh api`, the GitHub Environments (missing keys break the deploy, unused keys are drift, `OPENSHIFT_TOKEN` near its one-year expiry). Exit 1 on any ERROR.
 - `gh_env.py <repo> --env dev|prod --file <KEY=value file> [--apply]` sets an Environment's vars/secrets, routing each key to var or secret by what `deploy.yml` reads; refuses keys no workflow reads. Dry run unless `--apply`.
 
 ## New project
@@ -85,5 +88,5 @@ Legacy shared-namespace repos (`genovine-*`, `data-explorer-*`, `metadata-api`, 
 
 ## References
 
-- `references/bootstrap.md` - one-time cluster + GitHub setup for a new project, token rotation.
+- `references/bootstrap.md` - one-time cluster + GitHub setup for a new project, branch protection, token rotation.
 - `references/lessons.md` - every rule above that comes from a past failure, with the reason. Read it before changing the templates or debugging a failed Deploy.

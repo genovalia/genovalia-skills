@@ -8,6 +8,7 @@ Each entry is a failure that already happened in one of the Genovalia repos. Don
 - **`routes/custom-host`: `create` only.** A Route with an explicit `spec.host` needs this subresource; the `routes` rules don't cover it. Asking for `update` too is self-escalation (the admin ClusterRole only has `create`), and the whole Role is refused. (ovision, 2026-09-22)
 - **RBAC files are bootstrap-only.** The CI account has no rights on serviceaccounts/roles/rolebindings; `oc apply -f oc/<env>/` including them fails with a 403 on every deploy. `deploy.py` excludes them by name (`BOOTSTRAP_ONLY_FILES`). (ovision, 2026-09-22)
 - **ImageStream rules are needed to push.** The registry checks `imagestreams/layers` get/update on the target name; the ImageStream is created on first push, so `imagestreams` create too.
+- **Bound tokens, not token Secrets.** `oc create token --duration=8760h` gives a token stored nowhere in the cluster that dies after a year; a `kubernetes.io/service-account-token` Secret never expires and anyone with Secret access in the namespace can read it. The price is a yearly rotation that nothing reminds anyone of: every token set on 2026-07-17 expires around 2027-07-17. `audit.py` warns 30 days ahead.
 - **Names are scoped because namespaces are shared by several apps.** That is why ConfigMap/Secret names must be predictable (and why metadata-api disables kustomize's hash suffix).
 
 ## deploy.py

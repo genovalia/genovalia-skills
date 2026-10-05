@@ -15,6 +15,7 @@ indentation of our own files, not a general YAML parser.
 """
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 import re
 import subprocess
 import sys
@@ -28,7 +29,12 @@ ENVS = {
     "prod": {"ns": "ul-val-genovalia-pr", "suffix": ""},
 }
 REQUIRED_FILES = ["deployment.yaml", "service.yaml", "route.yaml", "service-account.yaml", "role.yaml", "role-binding.yaml"]
-BOOTSTRAP_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml", "ci-token.yaml"}
+BOOTSTRAP_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml"}
+# Tokens come from `oc create token --duration=8760h`: they expire a year after
+# being issued and nothing renews them. The GitHub secret's updated_at is the
+# closest record of the issue date.
+TOKEN_LIFETIME = timedelta(days=365)
+TOKEN_WARN_BEFORE = timedelta(days=30)
 INFRA_VARS = {"OPENSHIFT_CLUSTER", "OPENSHIFT_NAMESPACE"}
 INFRA_SECRETS = {"OPENSHIFT_TOKEN", "SLACK_BOT_TOKEN", "GITHUB_TOKEN"}
 
@@ -133,8 +139,8 @@ def audit_env(repo: Path, app: str, env: str) -> None:
     for f in REQUIRED_FILES:
         if f not in files:
             report("ERROR", sec, f"missing {f}")
-    if "ci-token.yaml" not in files:
-        report("WARN", sec, "no ci-token.yaml: say how OPENSHIFT_TOKEN is issued, or add it")
+    if "ci-token.yaml" in files:
+        report("WARN", sec, "ci-token.yaml: a never-expiring token Secret; issue it with `oc create token --duration=8760h` instead and delete the Secret")
     for f in sorted(files):
         if f.endswith(".yml"):
             report("WARN", sec, f"{f}: use the .yaml extension (deploy.py only applies *.yaml)")
@@ -293,6 +299,22 @@ def names(path: str, key: str) -> set[str] | None:
     return None if r.returncode != 0 else set(r.stdout.split())
 
 
+def check_token(sec: str, path: str) -> None:
+    updated = (gh(path) or {}).get("updated_at")
+    if not updated:
+        return
+    issued = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+    expires = issued + TOKEN_LIFETIME
+    now = datetime.now(timezone.utc)
+    when = f"set {issued:%Y-%m-%d}, expires ~{expires:%Y-%m-%d} if issued for 8760h"
+    if now >= expires:
+        report("ERROR", sec, f"OPENSHIFT_TOKEN probably expired ({when}): rotate it")
+    elif now >= expires - TOKEN_WARN_BEFORE:
+        report("WARN", sec, f"OPENSHIFT_TOKEN expires soon ({when}): rotate it")
+    else:
+        report("OK", sec, f"OPENSHIFT_TOKEN {when}")
+
+
 def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[str], all_vars: set[str], all_secrets: set[str]) -> None:
     sec = "github"
     envs = gh(f"repos/{gh_repo}/environments")
@@ -311,6 +333,7 @@ def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[
         report("WARN", sec, f"repo-level var {v}: move it to each Environment (dev and prod are different namespaces)")
     if "OPENSHIFT_TOKEN" in repo_secrets:
         report("WARN", sec, "repo-level secret OPENSHIFT_TOKEN: move it to each Environment (one CI account per namespace)")
+        check_token(sec, f"repos/{gh_repo}/actions/secrets/OPENSHIFT_TOKEN")
     for v in sorted(repo_vars - all_vars):
         report("WARN", sec, f"repo-level var {v} is read by no workflow: delete")
     for s in sorted(repo_secrets - all_secrets):
@@ -341,6 +364,8 @@ def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[
             report("ERROR", s, f"var {v} missing at environment level")
         if "OPENSHIFT_TOKEN" not in es:
             report("ERROR", s, "secret OPENSHIFT_TOKEN missing at environment level")
+        else:
+            check_token(s, f"repos/{gh_repo}/environments/{env}/secrets/OPENSHIFT_TOKEN")
         if "OPENSHIFT_NAMESPACE" in ev:
             ns = (gh(f"repos/{gh_repo}/environments/{env}/variables/OPENSHIFT_NAMESPACE") or {}).get("value")
             if ns != e["ns"]:
