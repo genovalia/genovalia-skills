@@ -9,7 +9,11 @@ One layout for every deployed repo, so a new project is a scaffold plus a bootst
 
 Decided 2026-10-05: **dev and prod in separate namespaces**, **flat `oc/dev/` + `oc/prod/` manifests** (no Kustomize), **`<name>`, `<name>-service`, `<name>-route` naming**, **prod deployed automatically on merge to `main`** (the human gate is the required review of the `dev` -> `main` PR), **CI may create Routes with a custom host** (`routes/custom-host` create, no admin step per new Route).
 
-Confluence ("Comptes de service GitHub CI pour auto-déploiement", "Versionnement, tests et releases", Jul-Aug 2026) predates these choices. Where it says otherwise (shared namespace, manual prod deploy, no Secret or custom-host access for CI, manual git tag), this skill is the newer rule. Its token procedure (`oc create token --duration=8760h`) is kept as is.
+The team-facing description lives in two Confluence pages (space Genovalia), aligned with this skill on 2026-10-05:
+- "Comptes de service GitHub CI pour auto-déploiement" (page 247562242): CI accounts per app, what each Role grants, GitHub Environments, token generation and rotation, troubleshooting, and **the table of every app's CI account**.
+- "Versionnement, tests et releases" (page 246120451): versioning, test jobs, image naming, release flow, branch protection.
+
+Keep them in sync: when a project is bootstrapped (or a legacy repo migrated to `-dv`), add or update its row in the account table, including its "Accès particuliers" (own Secret, `routes/custom-host`). When this standard changes, update the matching section of those pages in the same change. Propose the Confluence edit to the user and publish it only once approved. If a page and this skill disagree, read the page's history before assuming which one is right.
 
 ## The standard
 
@@ -65,6 +69,7 @@ All under `scripts/`, Python stdlib only, run from anywhere.
 3. `Dockerfile` must run as non-root on an arbitrary UID (OpenShift SCC), listen on the declared port, and for a Vite SPA write runtime config at start (`ovision/docker-entrypoint.sh` pattern); Nuxt reads `NUXT_PUBLIC_*` at runtime by itself.
 4. Bootstrap the cluster and GitHub side: follow `references/bootstrap.md` step by step. Steps that run as a namespace admin or write to GitHub are done by the user, or by Claude only with explicit go-ahead for that step.
 5. Run `audit.py` until it reports 0 errors, then push to `dev` and watch the Deploy run.
+6. Add the app to the account table of the Confluence page "Comptes de service GitHub CI pour auto-déploiement" (see above).
 
 ## Audit an existing repo
 

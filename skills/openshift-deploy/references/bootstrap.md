@@ -99,3 +99,7 @@ oc get pods -n ul-val-genovalia-dv -l app=$APP-dev
 ```
 
 Then Keycloak (redirect URIs, web origins for both hosts) if the app uses it, and a PR `dev` -> `main` for prod.
+
+## 8. Confluence
+
+Add a row for the app to the account table of "Comptes de service GitHub CI pour auto-déploiement" (service account, namespaces `-dv` and `-pr`, RBAC files `oc/dev/` + `oc/prod/`, `OPENSHIFT_TOKEN` per Environment, special access: own Secret if it has one, `routes/custom-host`).
