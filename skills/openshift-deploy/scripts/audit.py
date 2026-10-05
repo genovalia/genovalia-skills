@@ -3,7 +3,8 @@
 
     audit.py <repo-dir> [--app NAME] [--gh-repo OWNER/NAME] [--no-github]
 
-Checks the oc/<env>/ manifests (names, namespaces, image, envFrom, RBAC),
+Checks the Kustomize leaves (oc/<stage>/ or oc/<tenant>/<stage>/, rendered: names,
+namespaces, image, envFrom, RBAC),
 deploy.py, the workflows, and - through `gh api`, read-only - the GitHub
 Environments: OpenShift access per environment, and the vars/secrets that
 deploy.yml reads versus the ones actually set (missing = deploy breaks,
@@ -32,8 +33,7 @@ ENVS = {
     "dev": {"ns": "ul-val-genovalia-dv", "suffix": "-dev"},
     "prod": {"ns": "ul-val-genovalia-pr", "suffix": ""},
 }
-REQUIRED_FILES = ["deployment.yaml", "service.yaml", "route.yaml", "service-account.yaml", "role.yaml", "role-binding.yaml"]
-BOOTSTRAP_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml"}
+RBAC_FILES = ["service-account.yaml", "role.yaml", "role-binding.yaml"]
 # Tokens come from `oc create token --duration=8760h`: they expire a year after
 # being issued and nothing renews them. The GitHub secret's updated_at is the
 # closest record of the issue date.
@@ -131,41 +131,6 @@ def check_role(sec: str, role: str, objects: dict[str, str], has_host: bool) -> 
         report("ERROR", sec, "role.yaml: no imagestreams/layers rule, docker push will be denied")
 
 
-def audit_env(repo: Path, app: str, env: str) -> None:
-    """Plain layout: oc/<env>/ files."""
-    sec = f"oc/{env}"
-    ns = ENVS[env]["ns"]
-    n = names_for(app, None, env)
-    d = repo / "oc" / env
-    if not d.is_dir():
-        report("ERROR", sec, f"missing directory {d}")
-        return
-    files = {p.name: p.read_text() for p in d.glob("*.y*ml")}
-    for f in REQUIRED_FILES:
-        if f not in files:
-            report("ERROR", sec, f"missing {f}")
-    if "ci-token.yaml" in files:
-        report("WARN", sec, "ci-token.yaml: a never-expiring token Secret; issue it with `oc create token --duration=8760h` instead and delete the Secret")
-    for f in sorted(files):
-        if f.endswith(".yml"):
-            report("WARN", sec, f"{f}: use the .yaml extension (deploy.py only applies *.yaml)")
-        elif f not in BOOTSTRAP_FILES and f not in REQUIRED_FILES:
-            report("WARN", sec, f"{f}: extra manifest applied by deploy.py, check role.yaml covers its kind")
-        txt = files[f]
-        mns = meta(txt, "namespace")
-        if mns and mns != ns:
-            report("ERROR", sec, f"{f}: namespace {mns}, expected {ns}")
-
-    sa_name = f"github-ci-{app}"
-    for f in ("service-account.yaml", "role.yaml", "role-binding.yaml"):
-        if f in files and meta(files[f], "name") != sa_name:
-            report("ERROR", sec, f"{f}: name {meta(files[f], 'name')}, expected {sa_name}")
-    check_objects(sec, env, ns, n, files.get("deployment.yaml", ""), files.get("service.yaml", ""),
-                  files.get("route.yaml", ""), files.get("role.yaml"))
-    if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
-        report("OK", sec, f"{n['name']} in {ns}")
-
-
 def check_objects(sec: str, env: str, ns: str, n: dict, dep: str, svc: str, route: str,
                   role: str | None, configmap: str = "") -> None:
     """Names, labels, image, envFrom and RBAC of one target's objects."""
@@ -247,19 +212,21 @@ def render(repo: Path, overlay: str) -> str | None:
 
 
 def audit_kustomize(repo: Path, app: str, targets: list[dict]) -> None:
-    """Kustomize layout: oc/base, oc/overlays/<tenant>/<stage>, oc/rbac/<stage>."""
+    """oc/base, one leaf per target (oc/<stage> or oc/<tenant>/<stage>), oc/rbac/<stage>."""
     sec = "oc"
     base = repo / "oc" / "base" / "kustomization.yaml"
     if not base.exists():
         report("ERROR", sec, "missing oc/base/kustomization.yaml")
     elif "nameref" not in base.read_text():
         report("ERROR", sec, "base declares no nameReference for Route spec.to.name: a rename leaves the Route dangling")
+    if (repo / "oc" / "overlays").is_dir():
+        report("ERROR", sec, "oc/overlays/ is the old layout: git mv each leaf to oc/<tenant>/<stage>/ and set resources: ../../base")
     gi = (repo / ".gitignore").read_text() if (repo / ".gitignore").exists() else ""
     if "config.env" not in gi or "secret.env" not in gi:
-        report("ERROR", sec, ".gitignore must exclude oc/overlays/*/*/config.env and secret.env (they hold secret values)")
+        report("ERROR", sec, ".gitignore must exclude the leaves' config.env and secret.env (they hold secret values)")
     for stage in ENVS:
         d = repo / "oc" / "rbac" / stage
-        for f in REQUIRED_FILES[3:]:
+        for f in RBAC_FILES:
             if not (d / f).exists():
                 report("ERROR", f"oc/rbac/{stage}", f"missing {f}")
             elif meta((d / f).read_text(), "name") != f"github-ci-{app}":
@@ -267,11 +234,14 @@ def audit_kustomize(repo: Path, app: str, targets: list[dict]) -> None:
             elif meta((d / f).read_text(), "namespace") != ENVS[stage]["ns"]:
                 report("ERROR", f"oc/rbac/{stage}", f"{f}: namespace should be {ENVS[stage]['ns']}")
     if not (repo / "oc" / "base").is_dir():
-        return
+        report("ERROR", sec, "missing oc/base (the standard is Kustomize: oc/base + one leaf per target)")
     for tg in targets:
-        sec = f"oc/overlays/{tg['tenant']}/{tg['stage']}"
+        sec = f"oc/{tg['tenant']}/{tg['stage']}" if tg["tenant"] else f"oc/{tg['stage']}"
         if not (repo / sec / "kustomization.yaml").exists():
-            report("ERROR", sec, "missing kustomization.yaml")
+            if (repo / sec / "deployment.yaml").exists():
+                report("ERROR", sec, "legacy plain manifests: move to oc/base + a Kustomize leaf (scaffold.py into a scratch dir, then port the differences)")
+            else:
+                report("ERROR", sec, "missing kustomization.yaml")
             continue
         try:
             out = render(repo, sec)
@@ -324,8 +294,8 @@ def audit_files(repo: Path, app: str, kustomize: bool) -> tuple[set[str], set[st
             for env, e in ENVS.items():
                 if e["ns"] not in text:
                     report("ERROR", sec, f"namespace {e['ns']} ({env}) not found: dev and prod must use separate namespaces")
-            if "BOOTSTRAP_ONLY_FILES" not in text and (repo / "oc" / "dev" / "role.yaml").exists():
-                report("ERROR", sec, "applies oc/<env>/ wholesale: the RBAC files there will 403 for the CI account")
+            if "oc kustomize" not in text:
+                report("ERROR", sec, "does not apply through `oc kustomize <leaf>`: realign with the template")
 
     sec = "workflows"
     wf = repo / ".github" / "workflows"
@@ -339,6 +309,10 @@ def audit_files(repo: Path, app: str, kustomize: bool) -> tuple[set[str], set[st
         report("WARN", sec, "restrict-main-source.yml differs from the template")
     if not (wf / "version-bump.yml").exists():
         report("ERROR", sec, "missing version-bump.yml")
+    if not (repo / "CHANGELOG.md").exists():
+        report("ERROR", sec, "missing CHANGELOG.md (version-bump.yml requires an entry for each version)")
+    elif "CHANGELOG.md" not in (wf / "version-bump.yml").read_text() if (wf / "version-bump.yml").exists() else False:
+        report("WARN", sec, "version-bump.yml does not check the CHANGELOG entry: realign with the template")
     if not any((wf / f).exists() for f in ("test.yml", "ci.yml")):
         report("ERROR", sec, "missing test.yml (PR checks)")
 
@@ -359,15 +333,13 @@ def audit_files(repo: Path, app: str, kustomize: bool) -> tuple[set[str], set[st
         optional = set(re.findall(r'\[ -n "\$([A-Z0-9_]+)" \]', t))
         if "ul-git-pr-resul-recherche-runners" not in t:
             report("ERROR", sec, "deploy.yml does not run on the ul-git-pr-resul-recherche-runners group (cluster access)")
-        tag_part = t.split("\n  tag:", 1)[-1].split("\n\n", 1)[0] if kustomize else t.split("Tag version", 1)[-1].split("\n\n", 1)[0]
+        tag_part = t.split("\n  tag:", 1)[-1].split("\n\n", 1)[0]
         if "github.ref_name == 'main'" not in tag_part:
             report("WARN", sec, "release tagging not guarded by github.ref_name == 'main'")
-        if kustomize and "fromJSON(needs.targets.outputs.targets)" not in t:
-            report("WARN", sec, "deploy.yml predates the Kustomize template (no per-target matrix): realign when touched")
+        if "fromJSON(needs.targets.outputs.targets)" not in t:
+            report("ERROR", sec, "deploy.yml is not the Kustomize template (no per-target matrix): realign with templates/workflows/deploy-kustomize.yml")
         if "SENTRY_ENVIRONMENT" in env_vars:
             report("WARN", sec, "SENTRY_ENVIRONMENT read from a GitHub var: pin it in the manifests")
-        if not kustomize and "RESOURCE_NAME" not in t:
-            report("WARN", sec, "deploy.yml predates the template (no DEPLOY_ENV/RESOURCE_NAME job env): realign when touched")
     if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
         report("OK", sec, "deploy, test, version-bump, restrict-main-source present")
     return env_vars - INFRA_VARS - optional, env_secrets - INFRA_SECRETS - optional, all_vars, all_secrets, optional
@@ -477,17 +449,17 @@ def audit_github(gh_repo: str, targets: list[dict], need_vars: set[str], need_se
 # ---------------------------------------------------------------- main
 
 def detect_targets(repo: Path, app: str) -> tuple[bool, list[dict]]:
-    """(kustomize?, targets) from deploy.py TENANTS, else from oc/overlays/."""
+    """(kustomize?, targets) from deploy.py TENANTS, else from oc/."""
     tenants: list[str] = []
     dp = repo / "deploy.py"
     if dp.exists():
         m = re.search(r"^TENANTS: list\[str\] = \[(.*)\]$", dp.read_text(), re.M)
         if m:
             tenants = [s.strip().strip("\"'") for s in m.group(1).split(",") if s.strip()]
-    overlays = repo / "oc" / "overlays"
-    if not tenants and overlays.is_dir():
-        tenants = sorted(p.name for p in overlays.iterdir() if p.is_dir())
-    kustomize = bool(tenants)
+    oc = repo / "oc"
+    if not tenants and oc.is_dir():
+        tenants = sorted({p.parent.parent.name for p in oc.glob("*/*/kustomization.yaml")} - {"base", "overlays"})
+    kustomize = True
     targets = []
     for stage, e in ENVS.items():
         for tenant in tenants or [None]:
@@ -507,9 +479,10 @@ def detect_app(repo: Path) -> str | None:
         m = re.search(r'^APP\s*=\s*"([^"]+)"', dp.read_text(), re.M)
         if m:
             return m.group(1)
-    dep = repo / "oc" / "prod" / "deployment.yaml"
-    if dep.exists():
-        return meta(dep.read_text(), "name")
+    for rel in ("prod", "base"):
+        dep = repo / "oc" / rel / "deployment.yaml"
+        if dep.exists() and not meta(dep.read_text(), "name").startswith("__"):
+            return meta(dep.read_text(), "name")
     return None
 
 
@@ -517,6 +490,25 @@ def detect_gh_repo(repo: Path) -> str | None:
     r = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"], capture_output=True, text=True)
     m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", r.stdout.strip())
     return m.group(1) if m else None
+
+
+RUNNER_ORG = "ulaval-recherche"
+RUNNER_GROUP = "ul-git-pr-resul-recherche-runners"
+
+
+def audit_reachability(repo: Path, gh_repo: str | None) -> None:
+    """The registry and the cluster API are only reachable from the org's runner group."""
+    sec = "runners"
+    if gh_repo and gh_repo.split("/")[0].lower() != RUNNER_ORG:
+        report("ERROR", sec, f"{gh_repo} is not in the {RUNNER_ORG} org: the runner group {RUNNER_GROUP} "
+               "(the only one that reaches the image registry and the cluster) is not available, transfer the repo")
+    wf = repo / ".github" / "workflows" / "deploy.yml"
+    if wf.exists() and RUNNER_GROUP not in wf.read_text():
+        report("ERROR", sec, f"deploy.yml does not run on group {RUNNER_GROUP}: ubuntu-latest cannot reach the registry/cluster")
+    if (repo / "deploy.py").exists():
+        t = (repo / "deploy.py").read_text()
+        if '"tag", f"{image}:latest", f"{image}:{version}"' not in t or 'push", f"{image}:{version}"' not in t:
+            report("ERROR", sec, "deploy.py does not tag and push the image as :<version> (pyproject.toml / package.json)")
 
 
 def main() -> None:
@@ -533,15 +525,12 @@ def main() -> None:
     print(f"# audit {a.repo.resolve()} (app={app})\n")
 
     kustomize, targets = detect_targets(a.repo, app)
-    if kustomize:
-        print(f"Kustomize layout, targets: {', '.join(tg['target'] for tg in targets)}\n")
-        audit_kustomize(a.repo, app, targets)
-    else:
-        for env in ENVS:
-            audit_env(a.repo, app, env)
+    print(f"targets: {', '.join(tg['target'] for tg in targets)}\n")
+    audit_kustomize(a.repo, app, targets)
     need_vars, need_secrets, all_vars, all_secrets, _ = audit_files(a.repo, app, kustomize)
+    gh_repo = a.gh_repo or detect_gh_repo(a.repo)
+    audit_reachability(a.repo, gh_repo)
     if not a.no_github:
-        gh_repo = a.gh_repo or detect_gh_repo(a.repo)
         if gh_repo:
             audit_github(gh_repo, targets, need_vars, need_secrets, all_vars, all_secrets)
         else:

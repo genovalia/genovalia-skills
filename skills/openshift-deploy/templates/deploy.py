@@ -20,9 +20,9 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 APP = "__APP__"
-# Empty: one deployment per stage, plain manifests in oc/<stage>/, targets
+# Empty: one deployment per stage, Kustomize leaves in oc/<stage>/, targets
 # "dev" and "prod". Several tenants (same app deployed for several clients):
-# Kustomize overlays in oc/overlays/<tenant>/<stage>/, targets "<tenant>-<stage>".
+# leaves in oc/<tenant>/<stage>/, targets "<tenant>-<stage>".
 TENANTS: list[str] = __TENANTS__
 
 SERVER = "api.ul-pca-pr-ul01.ulaval.ca:6443"
@@ -35,9 +35,8 @@ NAMESPACES = {"dev": "ul-val-genovalia-dv", "prod": "ul-val-genovalia-pr"}
 def build_targets() -> dict[str, dict]:
     """Deploy target -> stage, namespace, manifest dir and resource name.
 
-    `name` is the Deployment, ConfigMap and image name. Plain layout: Service
-    <name>-service, Route <name>-route, Secret <name>-secrets. Kustomize adds
-    the prefix/suffix around each base name instead: <tenant>-<app>-service[-dev].
+    `name` is the Deployment, ConfigMap and image name. Kustomize adds the
+    prefix/suffix around each base name: Service [<tenant>-]<app>-service[-dev].
     """
     targets = {}
     for stage, namespace in NAMESPACES.items():
@@ -48,28 +47,18 @@ def build_targets() -> dict[str, dict]:
                 "namespace": namespace,
                 "name": f"{APP}{suffix}",
                 "manifest": f"oc/{stage}",
-                "kustomize": False,
             }
         for tenant in TENANTS:
             targets[f"{tenant}-{stage}"] = {
                 "stage": stage,
                 "namespace": namespace,
                 "name": f"{tenant}-{APP}{suffix}",
-                "manifest": f"oc/overlays/{tenant}/{stage}",
-                "kustomize": True,
+                "manifest": f"oc/{tenant}/{stage}",
             }
     return targets
 
 
 TARGETS = build_targets()
-
-# Bootstrap-only: applied once by hand with elevated credentials (see the
-# openshift-deploy skill), not by this script. In the Kustomize layout they
-# live apart, in oc/rbac/<stage>/, and the overlays never include them. The CI service account's Role
-# has nothing on serviceaccounts/roles/rolebindings, so applying these here
-# would 403 and abort every deploy.
-BOOTSTRAP_ONLY_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml"}
-
 
 def get_version() -> str:
     if Path("pyproject.toml").exists():
@@ -141,34 +130,19 @@ def push(image: str, version: str) -> None:
     run(["docker", "push", f"{image}:latest"])
 
 
-def manifest_files(manifest: str) -> list[str]:
-    files = sorted(
-        str(p)
-        for p in Path(manifest).glob("*.yaml")
-        if p.name not in BOOTSTRAP_ONLY_FILES
-    )
-    if not files:
-        raise RuntimeError(f"No manifest files found in {manifest}/")
-    return files
-
-
 def apply_and_rollout(target: dict, version: str) -> None:
     namespace, name = target["namespace"], target["name"]
     label = f"app.kubernetes.io/version={version}"
-    if target["kustomize"]:
-        # Rendered once and fed to both apply and label, so both see the
-        # same objects (and `oc label -k` support varies across versions).
-        logger.info("$ oc kustomize %s", target["manifest"])
-        rendered = subprocess.run(
-            ["oc", "kustomize", target["manifest"]], check=True, capture_output=True, text=True
-        ).stdout
-        run(["oc", "apply", "-n", namespace, "-f", "-"], input=rendered)
-        run(["oc", "label", "--overwrite", "-n", namespace, "-f", "-", label], input=rendered)
-    else:
-        file_args = [arg for f in manifest_files(target["manifest"]) for arg in ("-f", f)]
-        run(["oc", "apply", "-n", namespace, *file_args])
-        # Tag every applied object (Deployment, Service, Route, ...) with the deployed version.
-        run(["oc", "label", "--overwrite", "-n", namespace, *file_args, label])
+    # RBAC lives in oc/rbac/<stage>/, outside the leaves: the CI account has
+    # nothing on serviceaccounts/roles/rolebindings. Rendered once and fed to
+    # both apply and label, so both see the same objects.
+    logger.info("$ oc kustomize %s", target["manifest"])
+    rendered = subprocess.run(
+        ["oc", "kustomize", target["manifest"]], check=True, capture_output=True, text=True
+    ).stdout
+    run(["oc", "apply", "-n", namespace, "-f", "-"], input=rendered)
+    # Tag every applied object (Deployment, Service, Route, ...) with the deployed version.
+    run(["oc", "label", "--overwrite", "-n", namespace, "-f", "-", label], input=rendered)
     # Unconditional restart: `:latest` did not change name, and the ConfigMap/
     # Secret synced just before this step are only read at pod start.
     run(["oc", "rollout", "restart", "-n", namespace, f"deployment/{name}"])

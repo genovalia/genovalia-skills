@@ -9,9 +9,11 @@ kind: Kustomization
 namespace: __NS__
 
 resources:
-    - ../../../base
+    - __BASE__
 
+# >>> tenant
 namePrefix: __TENANT__-
+# <<< tenant
 # >>> devsuffix
 nameSuffix: -dev
 # <<< devsuffix

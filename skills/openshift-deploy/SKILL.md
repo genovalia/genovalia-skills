@@ -1,13 +1,13 @@
 ---
 name: openshift-deploy
-description: Genovalia standard for deploying an app to the UL OpenShift cluster (ul-val-genovalia-dv / -pr) - oc/<env>/ manifests (or Kustomize overlays when one app is deployed for several tenants), CI service account RBAC, deploy.py, GitHub workflows (deploy, test, version-bump, restrict-main-source) and GitHub Environment vars/secrets synced into ConfigMap/Secret. Use when setting up deployment or CI/CD for a new Genovalia project, adding/removing a config variable or secret of a deployed app, auditing or realigning an existing repo's oc/ folder, workflows or GitHub environments, or debugging a failed Deploy run.
+description: Genovalia standard for deploying an app to the UL OpenShift cluster (ul-val-genovalia-dv / -pr) - Kustomize manifests (oc/base + oc/<stage>/, or oc/<tenant>/<stage>/ when one app is deployed for several tenants), CI service account RBAC, deploy.py, GitHub workflows (deploy, test, version-bump, restrict-main-source) and GitHub Environment vars/secrets synced into ConfigMap/Secret. Use when setting up deployment or CI/CD for a new Genovalia project, adding/removing a config variable or secret of a deployed app, auditing or realigning an existing repo's oc/ folder, workflows or GitHub environments, or debugging a failed Deploy run.
 ---
 
 # OpenShift deploy standard (Genovalia)
 
 One layout for every deployed repo, so a new project is a scaffold plus a bootstrap, and any repo can be audited against it. Reference implementations: `ovision-api` (backend) and `ovision` (frontend) are the closest; `genovine-*` and `data-explorer-*` follow the same workflow logic but still use one shared namespace (see Legacy).
 
-Decided 2026-10-05: **dev and prod in separate namespaces**, **flat `oc/dev/` + `oc/prod/` manifests** (Kustomize only for several tenants, see [Kustomize layout](#kustomize-layout-several-tenants)), **`<name>`, `<name>-service`, `<name>-route` naming**, **prod deployed automatically on merge to `main`** (the human gate is the required review of the `dev` -> `main` PR), **CI may create Routes with a custom host** (`routes/custom-host` create, no admin step per new Route).
+Decided 2026-10-05: **dev and prod in separate namespaces**, **Kustomize for every app**: `oc/base/` + one leaf per target, `oc/dev/` + `oc/prod/` for one tenant, `oc/<tenant>/<stage>/` for several (see [Kustomize layout](#kustomize-layout)), **names with the stage as a suffix** (`<app>-service-dev`: kustomize appends it after each base name), **prod deployed automatically on merge to `main`** (the human gate is the required review of the `dev` -> `main` PR), **CI may create Routes with a custom host** (`routes/custom-host` create, no admin step per new Route).
 
 The team-facing description lives in two Confluence pages (space Genovalia), aligned with this skill on 2026-10-05:
 - "Comptes de service GitHub CI pour auto-déploiement" (page 247562242): CI accounts per app, what each Role grants, GitHub Environments, token generation and rotation, troubleshooting, and **the table of every app's CI account**.
@@ -19,9 +19,11 @@ Keep them in sync: when a project is bootstrapped (or a legacy repo migrated to 
 
 ```
 deploy.py                       templates/deploy.py, only APP (and TENANTS) differ
-oc/dev/  oc/prod/               one folder per env, *.yaml only
-  deployment.yaml service.yaml route.yaml       applied by deploy.py
-  service-account.yaml role.yaml role-binding.yaml   bootstrap-only (namespace admin, once)
+oc/base/                        deployment, service, route, kustomization, nameref (Route -> Service)
+oc/dev/  oc/prod/               one leaf per stage: kustomization.yaml (+ config.env, secret.env,
+                                written by CI, gitignored). Several tenants: oc/<tenant>/<stage>/
+oc/rbac/dev/  oc/rbac/prod/     service-account, role, role-binding: bootstrap-only (namespace
+                                admin, once), one CI account per namespace
 .github/workflows/
   deploy.yml                    push dev -> dev, push main -> prod, manual dispatch
   test.yml                      PR checks (tests + docker build)
@@ -33,8 +35,8 @@ oc/dev/  oc/prod/               one folder per env, *.yaml only
 |---|---|---|
 | Namespace | `ul-val-genovalia-dv` | `ul-val-genovalia-pr` |
 | `<name>` (Deployment, ConfigMap, ImageStream, `app` label) | `<app>-dev` | `<app>` |
-| Service / Route | `<name>-service` / `<name>-route` | same |
-| Secret | `<name>-secrets` | same |
+| Service / Route | `<app>-service-dev` / `<app>-route-dev` | `<app>-service` / `<app>-route` |
+| Secret | `<app>-secrets-dev` | `<app>-secrets` |
 | Image | `registre.apps.ul-pca-pr-ul01.ulaval.ca/<ns>/<name>:latest` + `:<version>` | same |
 | Host (default) | `<app>-dev.apps.genovalia.ulaval.ca` | `<app>.apps.genovalia.ulaval.ca` |
 | CI account | `github-ci-<app>` (SA + Role + RoleBinding), one per namespace; token from `oc create token --duration=8760h`, rotated yearly | same |
@@ -50,15 +52,19 @@ GitHub layout:
 | Environment `prod` | deployment branch policy: `main` only |
 | Branch protection | `dev` and `main`: PR + required checks; `main`: 1 approving review |
 
-GitHub is the source of truth for config values: `deploy.yml` re-creates the ConfigMap `<name>` and Secret `<name>-secrets` from the Environment on every deploy, then `deploy.py` builds, pushes, applies `oc/<env>/` (minus the bootstrap files), labels everything with `app.kubernetes.io/version` and restarts the Deployment. A prod deploy from `main` tags `v<version>`. Slack: `deployment-dev`, `deployment-prod`, failures in `github-ci`.
+GitHub is the source of truth for config values: `deploy.yml` writes `config.env` and `secret.env` into the leaf from the Environment on every deploy, then `deploy.py` builds, pushes, applies `oc kustomize <leaf>` (the generators create the ConfigMap `<name>` and Secret `<name>-secrets`), labels everything with `app.kubernetes.io/version` and restarts the Deployment. A prod deploy from `main` tags `v<version>`. Slack: `deployment-dev`, `deployment-prod`, failures in `github-ci`.
 
 Never: a value in a committed manifest that belongs in GitHub, a secret in a GitHub *variable*, a `NUXT_PUBLIC_*` / `VITE_*` key holding a secret (those reach the browser), `SENTRY_ENVIRONMENT` as a GitHub var (it is pinned in `deployment.yaml`), `OPENSHIFT_*` at repo level, a `DeploymentConfig`.
+
+**Prerequisite: the repo lives in the GitHub org `ulaval-recherche`.** The image registry and the cluster API are only reachable from that org's runner group `ul-git-pr-resul-recherche-runners` (`runs-on: group:` in `deploy.yml`); a repo elsewhere (e.g. `genovalia/`) cannot deploy, `ubuntu-latest` neither. The image is always tagged and pushed as `:<version>` (read from `pyproject.toml` / `package.json` by `deploy.py`) next to `:latest`. `audit.py` errors on all three.
+
+**Versioning of deployed apps:** the version in `pyproject.toml` / `package.json` follows [SemVer](https://semver.org) and each version has a `## <version>` entry in the repo's `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com)). `version-bump.yml` fails a PR that does not raise the version or lacks its entry; `scaffold.py` writes the `CHANGELOG.md` stub; `audit.py` checks both.
 
 ## Scripts
 
 All under `scripts/`, Python stdlib only, run from anywhere.
 
-- `scaffold.py <repo> --app <app> --stack python|node --port N [--health /path] [--host-prod H] [--host-dev H] --config K1,K2,K3? [--secrets S1,S2?] [--sentry] [--migrate]` writes the files above. With `--tenants T1,T2 [--host TARGET=HOST ...]` it writes the Kustomize layout instead. `--migrate` (python) adds a test job that applies the alembic migrations to a throwaway Postgres; use it whenever the app has migrations. `K?` = optional key, only sent when set (so an app default is not overridden by `""`). Never overwrites without `--force`.
+- `scaffold.py <repo> --app <app> --stack python|node --port N [--health /path] [--host TARGET=HOST ...] --config K1,K2,K3? [--secrets S1,S2?] [--sentry] [--migrate] [--tenants T1,T2]` writes the files above (`--tenants` for the several-tenants layout). `--migrate` (python) adds a test job that applies the alembic migrations to a throwaway Postgres; use it whenever the app has migrations. `K?` = optional key, only sent when set (so an app default is not overridden by `""`). Never overwrites without `--force`.
 - `audit.py <repo> [--app A] [--no-github]` checks manifests, RBAC, deploy.py, workflows and, read-only through `gh api`, the GitHub Environments (missing keys break the deploy, unused keys are drift, `OPENSHIFT_TOKEN` near its one-year expiry). Exit 1 on any ERROR.
 - `gh_env.py <repo> --env <target> --file <KEY=value file> [--apply]` sets an Environment's vars/secrets, routing each key to var or secret by what `deploy.yml` reads; refuses keys no workflow reads. Dry run unless `--apply`.
 
@@ -80,42 +86,43 @@ Legacy shared-namespace repos (`genovine-*`, `data-explorer-*`, `metadata-api`, 
 ## Add, rename or remove a config key / secret
 
 1. App code + `.env.example` first.
-2. `deploy.yml`, plain layout: in the right sync step, add `KEY: ${{ vars.KEY }}` (or `secrets.`) to `env:`, then the key either to the `for k in ...` required list and `args=(...)`, or as an `if [ -n "$KEY" ]; then args+=(...); fi` optional line. Kustomize layout: same `env:` entry in "Render env files", the key in the required list, and a `printf` line in the `config.env` (var) or `secret.env` (secret) block, wrapped in `if [ -n ... ]` when optional. Keep keys sorted.
+2. `deploy.yml`: add `KEY: ${{ vars.KEY }}` (or `secrets.`) to `env:` of "Render env files", the key to the required list, and a `printf` line in the `config.env` (var) or `secret.env` (secret) block, wrapped in `if [ -n ... ]` when optional. Keep keys sorted.
 3. Set it in **every** Environment (`gh_env.py` or `gh variable set KEY --env <target>`); a required key missing in one fails that target's next deploy, on purpose.
 4. Removing: delete from the workflow and from every Environment in the same change; the next deploy drops it from the ConfigMap.
 5. Run `audit.py`.
 
-## Kustomize layout (several tenants)
+## Kustomize layout
 
-Only when the **same app is deployed several times per stage** for different tenants (clients, catalogues), e.g. metadata-api for sedna and csdcc. One tenant: plain layout, always.
+Same mechanism for every app, two shapes:
 
 ```
-oc/base/                       deployment, service, route, kustomization, nameref (Route -> Service)
-oc/overlays/<tenant>/<stage>/  kustomization.yaml (+ config.env, secret.env: written by CI, gitignored)
-oc/rbac/dev/  oc/rbac/prod/    service-account, role, role-binding: one CI account per namespace,
-                               covering every tenant of that stage (bootstrap-only)
-deploy.py                      TENANTS = ["sedna", "csdcc"]
-.github/workflows/deploy.yml   templates/workflows/deploy-kustomize.yml
+one tenant (default)           several tenants (same app per client / catalogue, e.g. metadata-api)
+oc/base/                       oc/base/
+oc/dev/  oc/prod/              oc/<tenant>/dev/  oc/<tenant>/prod/     (oc/sedna/dev, oc/csdcc/prod)
+oc/rbac/dev/  oc/rbac/prod/    oc/rbac/dev/  oc/rbac/prod/             one CI account per namespace
+deploy.py  TENANTS = []        deploy.py  TENANTS = ["sedna", "csdcc"]
+.github/workflows/deploy.yml   templates/workflows/deploy-kustomize.yml (both)
 ```
 
-| | per target `<tenant>-<stage>` |
-|---|---|
-| Target = GitHub Environment | `<tenant>-dev`, `<tenant>-prod` (the first tenant too: no bare `dev`/`prod`) |
-| Deployment, ConfigMap, ImageStream, `app` label | `<tenant>-<app>[-dev]` |
-| Service / Route / Secret | `<tenant>-<app>-service[-dev]` / `-route[-dev]` / `-secrets[-dev]` (kustomize puts the suffix after every base name) |
-| Namespace | by stage, as in the plain layout |
-| Host (default) | `<tenant>-<app>[-dev].apps.genovalia.ulaval.ca`, `--host TARGET=HOST` to override |
+| | one tenant | per target `<tenant>-<stage>` |
+|---|---|---|
+| Target = GitHub Environment | `dev`, `prod` | `<tenant>-dev`, `<tenant>-prod` (the first tenant too: no bare `dev`/`prod`) |
+| Deployment, ConfigMap, ImageStream, `app` label | `<app>[-dev]` | `<tenant>-<app>[-dev]` |
+| Service / Route / Secret | `<app>-service[-dev]` / `-route[-dev]` / `-secrets[-dev]` | `<tenant>-<app>-service[-dev]` etc. |
+| Leaf | `oc/<stage>/` | `oc/<tenant>/<stage>/` |
+| Host (default) | `<app>[-dev].apps.genovalia.ulaval.ca` | `<tenant>-<app>[-dev].apps.genovalia.ulaval.ca`, `--host TARGET=HOST` to override |
 
-What differs from the plain layout:
-- Each overlay leaf declares **everything** that varies: `namespace`, `namePrefix`/`nameSuffix`, `labels`, `images`, the generators and the Route host patch. Never move any of it to an intermediate layer (lessons: Kustomize).
+- Each leaf declares **everything** that varies: `namespace`, `namePrefix` (tenants only) / `nameSuffix` (dev), `labels`, `images`, the generators and the Route host patch. Never move any of it to an intermediate layer, and never add one (lessons: Kustomize). `base/` stays neutral: no namespace, names, images or values.
+- A piece only some tenants need (sidecar, PVC): a patch in that leaf; once three or more leaves need the same one, a `components/` entry each leaf lists explicitly (it must not set namespace, names or generators).
 - The ConfigMap and Secret come from `configMapGenerator`/`secretGenerator` reading `config.env`/`secret.env`, not from `oc create configmap`: kustomize only renames references to objects of its own build. `SENTRY_ENVIRONMENT` is a generator `literal`. `disableNameSuffixHash: true`, because the Role scopes by name.
 - `deploy.yml`: a `targets` job lists the stage's targets (`deploy.py --list-targets`), the `deploy` job runs once per target (matrix, `fail-fast: false`, `environment: <target>`), and a final `tag` job tags once after all prod targets succeeded. A manual run deploys one target.
-- Running `deploy.py` by hand needs the overlay's `config.env`/`secret.env` locally (they are gitignored); prefer a manual workflow run.
-- Adding a tenant: `oc/overlays/<tenant>/{dev,prod}/` (copy a sibling, change prefix, image, host), add it to `TENANTS` and to the `workflow_dispatch` options, add its names to both Roles (namespace admin re-applies them), create its two Environments.
+- Running `deploy.py` by hand needs the leaf's `config.env`/`secret.env` locally (they are gitignored); prefer a manual workflow run.
+- Adding a tenant: `oc/<tenant>/{dev,prod}/` (copy a sibling, change prefix, image, host), add it to `TENANTS` and to the `workflow_dispatch` options, add its names to both Roles (namespace admin re-applies them), create its two Environments.
+- Migrating a repo still on flat manifests (`oc/dev/deployment.yaml`, `oc create configmap` in the workflow) or on `oc/overlays/`: `git mv` the leaves to `oc/<tenant>/<stage>/`, set `resources: ../../base`, and for flat manifests scaffold into a scratch dir and port the differences. `audit.py` reports both.
 
 ## Exceptions (keep, don't "fix")
 
-- `metadata-api`: the model for the Kustomize layout, but not aligned yet: shared namespace, bare `dev`/`prod` targets for sedna, `-db` Secret, image names with the tenant as suffix, no `restrict-main-source`/`version-bump` workflows. Tracked in DEV-391 (targets), DEV-392 (names), DEV-393 (dev namespace); `audit.py` reports all of it.
+- `metadata-api`: the model for the several-tenants layout, but not aligned yet: shared namespace, bare `dev`/`prod` targets for sedna, `-db` Secret, image names with the tenant as suffix, no `restrict-main-source`/`version-bump` workflows. Tracked in DEV-391 (targets), DEV-392 (names), DEV-393 (dev namespace); `audit.py` reports all of it.
 - `genovine-backend`: `oc/prod/cronjob.yaml` + `db-migration.yml` (manual dev->prod data copy, suspended CronJob).
 - `genovalia-keycloak`: prod only, no dev environment.
 

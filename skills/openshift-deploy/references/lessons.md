@@ -6,7 +6,7 @@ Each entry is a failure that already happened in one of the Genovalia repos. Don
 
 - **`create` cannot be scoped by `resourceNames`.** The object does not exist yet, so there is no name to match: a `create` verb inside a name-scoped rule is silently denied. Every resource gets a scoped rule (get/list/watch/update/patch) plus a separate unscoped `create` rule. (ovision, ovision-api, 2026-09-22)
 - **`routes/custom-host`: `create` only.** A Route with an explicit `spec.host` needs this subresource; the `routes` rules don't cover it. Asking for `update` too is self-escalation (the admin ClusterRole only has `create`), and the whole Role is refused. (ovision, 2026-09-22)
-- **RBAC files are bootstrap-only.** The CI account has no rights on serviceaccounts/roles/rolebindings; `oc apply -f oc/<env>/` including them fails with a 403 on every deploy. `deploy.py` excludes them by name (`BOOTSTRAP_ONLY_FILES`). (ovision, 2026-09-22)
+- **RBAC files are bootstrap-only.** The CI account has no rights on serviceaccounts/roles/rolebindings; applying them with the leaf fails with a 403 on every deploy. They live in `oc/rbac/<stage>/`, outside every leaf (earlier, flat layout: `deploy.py` excluded them by name). (ovision, 2026-09-22)
 - **ImageStream rules are needed to push.** The registry checks `imagestreams/layers` get/update on the target name; the ImageStream is created on first push, so `imagestreams` create too.
 - **Bound tokens, not token Secrets.** `oc create token --duration=8760h` gives a token stored nowhere in the cluster that dies after a year; a `kubernetes.io/service-account-token` Secret never expires and anyone with Secret access in the namespace can read it. The price is a yearly rotation that nothing reminds anyone of: every token set on 2026-07-17 expires around 2027-07-17. `audit.py` warns 30 days ahead.
 - **Names are scoped because namespaces are shared by several apps.** That is why ConfigMap/Secret names must be predictable (and why metadata-api disables kustomize's hash suffix).
@@ -38,7 +38,7 @@ Each entry is a failure that already happened in one of the Genovalia repos. Don
 - **Recreate with an RWO PVC.** A rolling update starts the new pod before the old one releases the volume and hangs.
 - **No PVC in `ul-val-genovalia-dv` yet.** ovision-api uses `emptyDir` with a comment until one is provisioned; uploads are lost on restart in dev.
 
-## Kustomize (several tenants, learned on metadata-api)
+## Kustomize (every app; learned on metadata-api)
 
 Encoded in `templates/kustomize/` and checked by `audit.py`:
 - OpenShift `Route` is unknown to kustomize: declare `nameReference` for `spec.to.name`, or a rename leaves the Route pointing at a dead Service.
@@ -47,4 +47,4 @@ Encoded in `templates/kustomize/` and checked by `audit.py`:
 - Overlay without `namespace:`: the generated ConfigMap/Secret and the references to them are matched per namespace; set it in every leaf, not in the base.
 - `labels` with `includeSelectors` for `app` only; `environment` goes in with `includeTemplates`, or the immutable selector changes and every apply fails.
 - Several prod targets must not each push the release tag: they race on the same `v<version>`. The workflow tags once, in a job after the whole matrix.
-- `deploy.py` renders the overlay once (`oc kustomize`) and feeds the same output to `oc apply` and `oc label`: `oc label -k` is not supported everywhere.
+- `deploy.py` renders the leaf once (`oc kustomize`) and feeds the same output to `oc apply` and `oc label`: `oc label -k` is not supported everywhere.

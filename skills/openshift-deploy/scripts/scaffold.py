@@ -3,14 +3,14 @@
 
     scaffold.py <repo-dir> --app NAME --stack python|node --port 8000 \
         [--health /health] [--config KEY,KEY?,...] [--secrets KEY,KEY?,...] \
+        [--tenants T1,T2,...] [--host TARGET=HOST ...] \
         [--sentry] [--migrate] [--force]
-        plain layout:     [--host-prod HOST] [--host-dev HOST]
-        Kustomize layout: --tenants T1,T2,... [--host TARGET=HOST ...]
 
-Plain layout (default): one deployment per stage, oc/dev/ and oc/prod/,
-targets "dev" and "prod". With --tenants, the same app is deployed once per
-tenant and stage: oc/base/ + oc/overlays/<tenant>/<stage>/ + oc/rbac/<stage>/,
-targets "<tenant>-<stage>", each with its own GitHub Environment.
+Always Kustomize: oc/base/ + one leaf per target + oc/rbac/<stage>/.
+One tenant (default): leaves oc/dev/ and oc/prod/, targets "dev" and "prod".
+With --tenants, the same app is deployed once per tenant and stage: leaves
+oc/<tenant>/<stage>/, targets "<tenant>-<stage>", each with its own GitHub
+Environment.
 
 A key ending in "?" is optional: the Deploy workflow only sends it when the
 GitHub Environment value is non-empty, so the app's own default stays in force.
@@ -29,7 +29,6 @@ TPL = SKILL / "templates"
 REGISTRY = "registre.apps.ul-pca-pr-ul01.ulaval.ca"
 NAMESPACES = {"dev": "ul-val-genovalia-dv", "prod": "ul-val-genovalia-pr"}
 RBAC_FILES = ["service-account.yaml", "role.yaml", "role-binding.yaml"]
-PLAIN_FILES = ["deployment.yaml", "service.yaml", "route.yaml"] + RBAC_FILES
 BASE_FILES = ["kustomization.yaml", "nameref.yaml", "deployment.yaml", "service.yaml", "route.yaml"]
 KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 SLUG_RE = re.compile(r"[a-z](?:[a-z0-9-]*[a-z0-9])?")
@@ -65,12 +64,10 @@ def subst(text: str, subs: dict[str, str]) -> str:
 
 
 def names_for(app: str, tenant: str | None, stage: str) -> dict[str, str]:
-    """Resource names of one target, as deploy.py and audit.py compute them."""
+    """Resource names of one target, as deploy.py and audit.py compute them.
+    Kustomize puts the tenant before and the stage after each base name."""
+    pre = f"{tenant}-" if tenant else ""
     sfx = "-dev" if stage == "dev" else ""
-    if tenant is None:
-        name = app + sfx
-        return {"name": name, "service": f"{name}-service", "route": f"{name}-route", "secret": f"{name}-secrets"}
-    pre = f"{tenant}-"
     return {
         "name": f"{pre}{app}{sfx}",
         "service": f"{pre}{app}-service{sfx}",
@@ -96,35 +93,8 @@ def role_lists(targets: list[dict], with_secrets: bool) -> dict[str, str]:
 
 # ---------------------------------------------------------------- deploy.yml
 
-def plain_sync(keys: list[tuple[str, bool]], source: str) -> dict[str, str]:
-    req = [k for k, opt in keys if not opt]
-    opt = [k for k, opt in keys if opt]
-    return {
-        "ENV": "\n".join(f"          {k}: ${{{{ {source}.{k} }}}}" for k, _ in keys),
-        "REQUIRED": " ".join(req),
-        "ARGS": "\n".join(f'            --from-literal={k}="${k}"' for k in req),
-        "OPTIONAL": "\n".join(
-            f'          if [ -n "${k}" ]; then args+=(--from-literal={k}="${k}"); fi' for k in opt
-        ),
-    }
-
-
 def drop_empty_required_loop(text: str) -> str:
     return re.sub(r"^ *missing=0\n *for k in ; do\n.*?\n *done\n *\[ \"\$missing\" = 0 \]\n", "", text, flags=re.M | re.S)
-
-
-def render_plain_deploy_yml(app: str, config, secrets) -> str:
-    text = blocks((TPL / "workflows" / "deploy.yml").read_text(), {"secrets": bool(secrets)})
-    for prefix, keys, source in (("CONFIG", config, "vars"), ("SECRET", secrets, "secrets")):
-        for part, value in plain_sync(keys, source).items():
-            marker = f"@@{prefix}_{part}@@"
-            if part == "OPTIONAL" and not value:
-                # drop the marker line and the comment that introduces it
-                text = re.sub(rf"^ *# Optional keys:.*\n(?: *#.*\n)*(?= *{marker})", "", text, flags=re.M)
-                text = re.sub(rf"^ *{marker}\n", "", text, flags=re.M)
-            else:
-                text = text.replace(marker, value)
-    return drop_empty_required_loop(text).replace("__APP__", app)
 
 
 def env_lines(keys: list[tuple[str, bool]]) -> str:
@@ -167,11 +137,9 @@ def main() -> None:
     ap.add_argument("--stack", required=True, choices=["python", "node"])
     ap.add_argument("--port", required=True, type=int)
     ap.add_argument("--health", default="/health", help="HTTP path for probes")
-    ap.add_argument("--tenants", default="", help="Kustomize layout: comma-separated tenant names")
-    ap.add_argument("--host-prod", help="plain layout, default <app>.apps.genovalia.ulaval.ca")
-    ap.add_argument("--host-dev", help="plain layout, default <app>-dev.apps.genovalia.ulaval.ca")
+    ap.add_argument("--tenants", default="", help="comma-separated tenant names (several tenants only)")
     ap.add_argument("--host", action="append", default=[], metavar="TARGET=HOST",
-                    help="Kustomize layout, default <tenant>-<app>[-dev].apps.genovalia.ulaval.ca")
+                    help="default <[tenant-]app>[-dev].apps.genovalia.ulaval.ca")
     ap.add_argument("--config", default="", help="ConfigMap keys (GitHub vars)")
     ap.add_argument("--secrets", default="", help="Secret keys (GitHub secrets)")
     ap.add_argument("--sentry", action="store_true", help="pin SENTRY_ENVIRONMENT to the stage")
@@ -186,13 +154,9 @@ def main() -> None:
         if not SLUG_RE.fullmatch(t) or t in NAMESPACES:
             sys.exit(f"--tenants: invalid tenant {t!r} (kebab-case, not 'dev'/'prod')")
     if len(tenants) == 1:
-        print("note: a single tenant does not need Kustomize; the plain layout is simpler")
+        print("note: a single tenant needs no --tenants: leaves are oc/dev and oc/prod")
     if a.migrate and a.stack != "python":
         sys.exit("--migrate is only for --stack python (alembic)")
-    if tenants and (a.host_prod or a.host_dev):
-        sys.exit("--host-prod/--host-dev are for the plain layout; use --host TARGET=HOST with --tenants")
-    if a.host and not tenants:
-        sys.exit("--host TARGET=HOST is for the Kustomize layout; use --host-prod/--host-dev")
     config = parse_keys(a.config, "--config")
     secrets = parse_keys(a.secrets, "--secrets")
     if not config:
@@ -205,55 +169,43 @@ def main() -> None:
     keep = {"secrets": bool(secrets), "sentry": a.sentry}
     common = {"__APP__": a.app, "__PORT__": str(a.port), "__HEALTH__": a.health}
 
-    if not tenants:
-        hosts = {
-            "prod": a.host_prod or f"{a.app}.apps.genovalia.ulaval.ca",
-            "dev": a.host_dev or f"{a.app}-dev.apps.genovalia.ulaval.ca",
-        }
-        for stage, ns in NAMESPACES.items():
-            n = names_for(a.app, None, stage)
-            subs = {**common, "__NAME__": n["name"], "__NS__": ns, "__ENV__": stage, "__HOST__": hosts[stage],
-                    **role_lists([n], bool(secrets))}
-            for f in PLAIN_FILES:
-                text = subst(blocks((TPL / "oc" / f).read_text(), keep), subs)
-                write(repo / "oc" / stage / f, text, a.force, written)
-        deploy_yml = render_plain_deploy_yml(a.app, config, secrets)
-        target_names = list(NAMESPACES)
-    else:
-        target_names = [f"{t}-{s}" for s in NAMESPACES for t in tenants]
-        hosts = {}
-        for item in a.host:
-            target, _, host = item.partition("=")
-            if target not in target_names or not host:
-                sys.exit(f"--host {item!r}: expected TARGET=HOST with TARGET in {target_names}")
-            hosts[target] = host
-        for f in BASE_FILES:
-            text = subst(blocks((TPL / "kustomize" / "base" / f).read_text(), keep), common)
-            write(repo / "oc" / "base" / f, text, a.force, written)
-        for stage, ns in NAMESPACES.items():
-            stage_targets = []
-            for t in tenants:
-                n = names_for(a.app, t, stage)
-                stage_targets.append(n)
-                target = f"{t}-{stage}"
-                subs = {**common, "__TARGET__": target, "__TENANT__": t, "__STAGE__": stage, "__NS__": ns,
-                        "__NAME__": n["name"],
-                        "__HOST__": hosts.get(target, f"{n['name']}.apps.genovalia.ulaval.ca")}
-                text = blocks((TPL / "kustomize" / "overlay.yaml").read_text(), {**keep, "devsuffix": stage == "dev"})
-                write(repo / "oc" / "overlays" / t / stage / "kustomization.yaml", subst(text, subs), a.force, written)
-            # one CI account per namespace, covering every tenant of the stage
-            subs = {**common, "__NAME__": f"{a.app}{'-dev' if stage == 'dev' else ''}", "__NS__": ns,
-                    **role_lists(stage_targets, bool(secrets))}
-            for f in RBAC_FILES:
-                text = subst(blocks((TPL / "oc" / f).read_text(), keep), subs)
-                write(repo / "oc" / "rbac" / stage / f, text, a.force, written)
-        deploy_yml = render_kustomize_deploy_yml(a.app, target_names, config, secrets)
-        gi = repo / ".gitignore"
-        current = gi.read_text() if gi.exists() else ""
-        if GITIGNORE_MARK not in current:
-            gi.write_text(current + ("\n" if current and not current.endswith("\n") else "")
-                          + f"{GITIGNORE_MARK} (hold secrets)\noc/overlays/*/*/config.env\noc/overlays/*/*/secret.env\n")
-            written.append(gi)
+    names_tenants: list[str | None] = tenants or [None]
+    target_names = [f"{t}-{s}" if t else s for s in NAMESPACES for t in names_tenants]
+    hosts = {}
+    for item in a.host:
+        target, _, host = item.partition("=")
+        if target not in target_names or not host:
+            sys.exit(f"--host {item!r}: expected TARGET=HOST with TARGET in {target_names}")
+        hosts[target] = host
+    for f in BASE_FILES:
+        text = subst(blocks((TPL / "kustomize" / "base" / f).read_text(), keep), common)
+        write(repo / "oc" / "base" / f, text, a.force, written)
+    for stage, ns in NAMESPACES.items():
+        stage_targets = []
+        for t in names_tenants:
+            n = names_for(a.app, t, stage)
+            stage_targets.append(n)
+            target = f"{t}-{stage}" if t else stage
+            subs = {**common, "__TARGET__": target, "__TENANT__": t or "", "__STAGE__": stage, "__NS__": ns,
+                    "__NAME__": n["name"], "__BASE__": "../../base" if t else "../base", "__HOST__": hosts.get(target, f"{n['name']}.apps.genovalia.ulaval.ca")}
+            text = blocks((TPL / "kustomize" / "overlay.yaml").read_text(),
+                          {**keep, "devsuffix": stage == "dev", "tenant": bool(t)})
+            leaf = repo / "oc" / t / stage if t else repo / "oc" / stage
+            write(leaf / "kustomization.yaml", subst(text, subs), a.force, written)
+        # one CI account per namespace, covering every target of the stage
+        subs = {**common, "__NAME__": f"{a.app}{'-dev' if stage == 'dev' else ''}", "__NS__": ns,
+                **role_lists(stage_targets, bool(secrets))}
+        for f in RBAC_FILES:
+            text = subst(blocks((TPL / "oc" / f).read_text(), keep), subs)
+            write(repo / "oc" / "rbac" / stage / f, text, a.force, written)
+    deploy_yml = render_kustomize_deploy_yml(a.app, target_names, config, secrets)
+    gi = repo / ".gitignore"
+    current = gi.read_text() if gi.exists() else ""
+    if GITIGNORE_MARK not in current:
+        gi.write_text(current + ("\n" if current and not current.endswith("\n") else "")
+                      + f"{GITIGNORE_MARK} (hold secrets)\noc/*/config.env\noc/*/secret.env\n"
+                        "oc/*/*/config.env\noc/*/*/secret.env\n")
+        written.append(gi)
 
     tenants_literal = "[" + ", ".join(f'"{t}"' for t in tenants) + "]"
     write(repo / "deploy.py", subst((TPL / "deploy.py").read_text(), {"__APP__": a.app, "__TENANTS__": tenants_literal}),
@@ -262,6 +214,9 @@ def main() -> None:
     write(wf / "deploy.yml", deploy_yml, a.force, written)
     write(wf / "restrict-main-source.yml", (TPL / "workflows" / "restrict-main-source.yml").read_text(), a.force, written)
     write(wf / "version-bump.yml", (TPL / "workflows" / f"version-bump-{a.stack}.yml").read_text(), a.force, written)
+    write(repo / "CHANGELOG.md", "# Changelog\n\n[Keep a Changelog](https://keepachangelog.com), [SemVer](https://semver.org). "
+          "One `## <version>` entry per version, matching pyproject.toml / package.json.\n\n## 0.1.0\n### Added\n- Initial version.\n",
+          a.force, written)
     test = blocks((TPL / "workflows" / f"test-{a.stack}.yml").read_text(), {"migrate": a.migrate, "nomigrate": not a.migrate})
     write(wf / "test.yml", test.replace("__APP__", a.app), a.force, written)
 

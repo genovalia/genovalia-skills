@@ -1,7 +1,7 @@
 name: Deploy
 
-# Kustomize layout: several targets per stage, one per tenant
-# (deploy.py TENANTS). A push deploys every target of the branch's stage in
+# One target per stage (dev, prod), or one per tenant and stage when deploy.py
+# TENANTS is set. A push deploys every target of the branch's stage in
 # parallel; a manual run deploys exactly one target.
 on:
   push:
@@ -83,7 +83,10 @@ jobs:
         env:
 @@ENV@@
         run: |
-          OVERLAY="oc/overlays/${TARGET%-*}/${TARGET##*-}"
+          case "$TARGET" in
+            dev|prod) OVERLAY="oc/$TARGET" ;;
+            *)        OVERLAY="oc/${TARGET%-*}/${TARGET##*-}" ;;
+          esac
           missing=0
           for k in @@REQUIRED@@; do
             [ -n "${!k}" ] || { echo "::error::$k is empty in the $TARGET environment"; missing=1; }

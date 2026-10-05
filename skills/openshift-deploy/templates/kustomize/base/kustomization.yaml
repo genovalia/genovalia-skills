@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Shape shared by every target. Names, namespace, labels, image, config and
-# Route host are all set by the overlays in oc/overlays/<tenant>/<stage>/.
+# Route host are all set by the overlays in oc/<tenant>/<stage>/.
 resources:
     - deployment.yaml
     - service.yaml

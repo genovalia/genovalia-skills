@@ -15,7 +15,7 @@ jobs:
       - name: Fetch base branch
         run: git fetch origin ${{ github.base_ref }}
 
-      - name: Vérifier que la version a été augmentée
+      - name: Vérifier la version (SemVer) et le CHANGELOG
         run: |
           set -euo pipefail
 
@@ -36,6 +36,11 @@ jobs:
               )
               sys.exit(1)
           EOF
+
+          if ! grep -qE "^## \[?${HEAD_VERSION//./\\.}\]?( |$)" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md n'a pas d'entrée « ## ${HEAD_VERSION} » (Keep a Changelog, SemVer)."
+            exit 1
+          fi
 
       - name: Notify Slack on failure
         if: failure()
