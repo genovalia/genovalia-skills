@@ -9,6 +9,8 @@ REPO=<owner>/<repo>             # GitHub repo
 
 Each step that writes to the cluster or to GitHub is done by the user, or by Claude only with explicit approval of that step.
 
+**Kustomize layout** (several tenants): the RBAC files are in `oc/rbac/<stage>/` instead of `oc/<stage>/`, and every step below that loops over `dev prod` loops over the targets instead (`python3 deploy.py --list-targets dev` / `prod`): one GitHub Environment, one token and one env file per target. The CI account stays one per namespace, shared by the tenants of that stage.
+
 ## 1. CI account in each namespace (namespace admin)
 
 The CI service account cannot create its own RBAC; a human with admin rights on the namespace applies the bootstrap files once. `deploy.py` skips them afterwards.
@@ -17,8 +19,9 @@ The CI service account cannot create its own RBAC; a human with admin rights on 
 oc login api.ul-pca-pr-ul01.ulaval.ca:6443        # personal account
 for ENV in dev prod; do
   NS=$([ "$ENV" = dev ] && echo ul-val-genovalia-dv || echo ul-val-genovalia-pr)
-  oc apply -n "$NS" -f oc/$ENV/service-account.yaml -f oc/$ENV/role.yaml \
-                    -f oc/$ENV/role-binding.yaml
+  DIR=oc/$ENV; [ -d oc/rbac ] && DIR=oc/rbac/$ENV     # Kustomize layout
+  oc apply -n "$NS" -f $DIR/service-account.yaml -f $DIR/role.yaml \
+                    -f $DIR/role-binding.yaml
 done
 ```
 
@@ -36,13 +39,15 @@ EOF
 gh api -X POST repos/$REPO/environments/prod/deployment-branch-policies -f name=main -f type=branch
 ```
 
+Kustomize layout: the same calls for each target, `<tenant>-dev` like `dev` and `<tenant>-prod` like `prod` (branch policy `main`).
+
 ## 3. OpenShift token into each Environment
 
 Bound tokens (`TokenRequest`), as in the Confluence page "Comptes de service GitHub CI pour auto-déploiement": stored nowhere in the cluster, valid 365 days, **never renewed automatically**. Pipe each one straight into GitHub so it is never displayed.
 
 ```bash
-for ENV in dev prod; do
-  NS=$([ "$ENV" = dev ] && echo ul-val-genovalia-dv || echo ul-val-genovalia-pr)
+for ENV in dev prod; do        # Kustomize layout: every target, e.g. sedna-dev csdcc-dev sedna-prod csdcc-prod
+  NS=$(case "$ENV" in *dev) echo ul-val-genovalia-dv ;; *) echo ul-val-genovalia-pr ;; esac)
   oc create token github-ci-$APP -n "$NS" --duration=8760h \
     | gh secret set OPENSHIFT_TOKEN --env "$ENV" --repo "$REPO"
 done

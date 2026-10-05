@@ -38,9 +38,13 @@ Each entry is a failure that already happened in one of the Genovalia repos. Don
 - **Recreate with an RWO PVC.** A rolling update starts the new pod before the old one releases the volume and hangs.
 - **No PVC in `ul-val-genovalia-dv` yet.** ovision-api uses `emptyDir` with a comment until one is provisioned; uploads are lost on restart in dev.
 
-## Kustomize (metadata-api only)
+## Kustomize (several tenants, learned on metadata-api)
 
-If a project ever needs it (several tenants of the same app):
+Encoded in `templates/kustomize/` and checked by `audit.py`:
 - OpenShift `Route` is unknown to kustomize: declare `nameReference` for `spec.to.name`, or a rename leaves the Route pointing at a dead Service.
 - `namePrefix`/`nameSuffix` and the generators must be in the same (leaf) kustomization, or the Deployment keeps pointing at another tenant's ConfigMap.
 - `disableNameSuffixHash: true`, because the CI Role scopes access by name.
+- Overlay without `namespace:`: the generated ConfigMap/Secret and the references to them are matched per namespace; set it in every leaf, not in the base.
+- `labels` with `includeSelectors` for `app` only; `environment` goes in with `includeTemplates`, or the immutable selector changes and every apply fails.
+- Several prod targets must not each push the release tag: they race on the same `v<version>`. The workflow tags once, in a job after the whole matrix.
+- `deploy.py` renders the overlay once (`oc kustomize`) and feeds the same output to `oc apply` and `oc label`: `oc label -k` is not supported everywhere.

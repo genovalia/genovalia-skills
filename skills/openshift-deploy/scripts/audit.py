@@ -17,9 +17,13 @@ import argparse
 import json
 from datetime import datetime, timedelta, timezone
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from scaffold import names_for
 
 SKILL = Path(__file__).resolve().parent.parent
 TPL = SKILL / "templates"
@@ -128,9 +132,10 @@ def check_role(sec: str, role: str, objects: dict[str, str], has_host: bool) -> 
 
 
 def audit_env(repo: Path, app: str, env: str) -> None:
+    """Plain layout: oc/<env>/ files."""
     sec = f"oc/{env}"
-    e = ENVS[env]
-    name, ns = app + e["suffix"], e["ns"]
+    ns = ENVS[env]["ns"]
+    n = names_for(app, None, env)
     d = repo / "oc" / env
     if not d.is_dir():
         report("ERROR", sec, f"missing directory {d}")
@@ -151,7 +156,20 @@ def audit_env(repo: Path, app: str, env: str) -> None:
         if mns and mns != ns:
             report("ERROR", sec, f"{f}: namespace {mns}, expected {ns}")
 
-    dep = files.get("deployment.yaml", "")
+    sa_name = f"github-ci-{app}"
+    for f in ("service-account.yaml", "role.yaml", "role-binding.yaml"):
+        if f in files and meta(files[f], "name") != sa_name:
+            report("ERROR", sec, f"{f}: name {meta(files[f], 'name')}, expected {sa_name}")
+    check_objects(sec, env, ns, n, files.get("deployment.yaml", ""), files.get("service.yaml", ""),
+                  files.get("route.yaml", ""), files.get("role.yaml"))
+    if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
+        report("OK", sec, f"{n['name']} in {ns}")
+
+
+def check_objects(sec: str, env: str, ns: str, n: dict, dep: str, svc: str, route: str,
+                  role: str | None, configmap: str = "") -> None:
+    """Names, labels, image, envFrom and RBAC of one target's objects."""
+    name = n["name"]
     secret_refs: list[str] = []
     if dep:
         kind = first(r"^kind:\s*(\S+)", dep)
@@ -159,6 +177,9 @@ def audit_env(repo: Path, app: str, env: str) -> None:
             report("ERROR", sec, f"deployment.yaml: kind {kind}, expected Deployment (DeploymentConfig is deprecated)")
         if meta(dep, "name") != name:
             report("ERROR", sec, f"Deployment name {meta(dep, 'name')}, expected {name}")
+        mns = meta(dep, "namespace")
+        if mns and mns != ns:
+            report("ERROR", sec, f"Deployment namespace {mns}, expected {ns}")
         if first(r"^\s+environment:\s*(\S+)", block(dep, "metadata")) != env:
             report("WARN", sec, f"Deployment metadata.labels.environment should be {env}")
         if first(r"^\s+app:\s*(\S+)", block(dep, "matchLabels")) != name:
@@ -171,48 +192,111 @@ def audit_env(repo: Path, app: str, env: str) -> None:
         secret_refs = sorted(set(re.findall(r"secretRef:\s*\n\s+name:\s*(\S+)", dep)))
         if cms != {name}:
             report("ERROR", sec, f"envFrom configMapRef {sorted(cms)}, expected ['{name}']")
-        if secret_refs and secret_refs != [f"{name}-secrets"]:
-            report("ERROR", sec, f"envFrom secretRef {secret_refs}, expected ['{name}-secrets']")
+        if secret_refs and secret_refs != [n["secret"]]:
+            report("ERROR", sec, f"envFrom secretRef {secret_refs}, expected ['{n['secret']}']")
         sentry = re.findall(r"name:\s*SENTRY_ENVIRONMENT\s*\n\s*value:\s*\"?(\w+)", dep)
+        sentry += re.findall(r"^\s+SENTRY_ENVIRONMENT:\s*\"?(\w+)", configmap, re.M)
         if any(v != env for v in sentry):
             report("ERROR", sec, f"SENTRY_ENVIRONMENT pinned to {set(sentry)}, expected {env}")
 
-    svc = files.get("service.yaml", "")
     if svc:
-        if meta(svc, "name") != f"{name}-service":
-            report("ERROR", sec, f"Service name {meta(svc, 'name')}, expected {name}-service")
+        if meta(svc, "name") != n["service"]:
+            report("ERROR", sec, f"Service name {meta(svc, 'name')}, expected {n['service']}")
         if first(r"^\s+app:\s*(\S+)", block(svc, "selector")) != name:
             report("ERROR", sec, f"Service selector app should be {name}")
 
-    route = files.get("route.yaml", "")
     host = None
     if route:
-        if meta(route, "name") != f"{name}-route":
-            report("ERROR", sec, f"Route name {meta(route, 'name')}, expected {name}-route")
+        if meta(route, "name") != n["route"]:
+            report("ERROR", sec, f"Route name {meta(route, 'name')}, expected {n['route']}")
         to = first(r"^\s+name:\s*(\S+)", block(route, "to"))
-        if to != f"{name}-service":
-            report("ERROR", sec, f"Route points to {to}, expected {name}-service")
+        if to != n["service"]:
+            report("ERROR", sec, f"Route points to {to}, expected {n['service']}")
         host = first(r"^\s+host:\s*(\S+)", route)
         if host and host.endswith(".apps.genovalia.ulaval.ca") and env == "dev" and "-dev" not in host:
             report("WARN", sec, f"dev Route host {host} has no -dev in it")
 
-    sa_name = f"github-ci-{app}"
-    for f in ("service-account.yaml", "role.yaml", "role-binding.yaml"):
-        if f in files and meta(files[f], "name") != sa_name:
-            report("ERROR", sec, f"{f}: name {meta(files[f], 'name')}, expected {sa_name}")
-    if "role.yaml" in files:
+    if role:
         objects = {
             "deployments": name,
-            "services": f"{name}-service",
-            "routes": f"{name}-route",
+            "services": n["service"],
+            "routes": n["route"],
             "configmaps": name,
             "imagestreams": name,
         }
         if secret_refs:
-            objects["secrets"] = f"{name}-secrets"
-        check_role(sec, files["role.yaml"], objects, bool(host))
-    if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
-        report("OK", sec, f"{name} in {ns}")
+            objects["secrets"] = n["secret"]
+        check_role(sec, role, objects, bool(host))
+
+
+def render(repo: Path, overlay: str) -> str | None:
+    """`oc kustomize` (or kubectl) of an overlay, on a copy of oc/ with empty
+    placeholders for the env files the Deploy workflow would write."""
+    tool = shutil.which("oc") or shutil.which("kubectl")
+    if not tool:
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        shutil.copytree(repo / "oc", Path(tmp) / "oc")
+        leaf = Path(tmp) / overlay
+        for f in ("config.env", "secret.env"):
+            (leaf / f).touch(exist_ok=True)
+        r = subprocess.run([tool, "kustomize", str(leaf)], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "kustomize failed")
+        return r.stdout
+
+
+def audit_kustomize(repo: Path, app: str, targets: list[dict]) -> None:
+    """Kustomize layout: oc/base, oc/overlays/<tenant>/<stage>, oc/rbac/<stage>."""
+    sec = "oc"
+    base = repo / "oc" / "base" / "kustomization.yaml"
+    if not base.exists():
+        report("ERROR", sec, "missing oc/base/kustomization.yaml")
+    elif "nameref" not in base.read_text():
+        report("ERROR", sec, "base declares no nameReference for Route spec.to.name: a rename leaves the Route dangling")
+    gi = (repo / ".gitignore").read_text() if (repo / ".gitignore").exists() else ""
+    if "config.env" not in gi or "secret.env" not in gi:
+        report("ERROR", sec, ".gitignore must exclude oc/overlays/*/*/config.env and secret.env (they hold secret values)")
+    for stage in ENVS:
+        d = repo / "oc" / "rbac" / stage
+        for f in REQUIRED_FILES[3:]:
+            if not (d / f).exists():
+                report("ERROR", f"oc/rbac/{stage}", f"missing {f}")
+            elif meta((d / f).read_text(), "name") != f"github-ci-{app}":
+                report("ERROR", f"oc/rbac/{stage}", f"{f}: name should be github-ci-{app}")
+            elif meta((d / f).read_text(), "namespace") != ENVS[stage]["ns"]:
+                report("ERROR", f"oc/rbac/{stage}", f"{f}: namespace should be {ENVS[stage]['ns']}")
+    if not (repo / "oc" / "base").is_dir():
+        return
+    for tg in targets:
+        sec = f"oc/overlays/{tg['tenant']}/{tg['stage']}"
+        if not (repo / sec / "kustomization.yaml").exists():
+            report("ERROR", sec, "missing kustomization.yaml")
+            continue
+        try:
+            out = render(repo, sec)
+        except RuntimeError as exc:
+            report("ERROR", sec, f"kustomize build fails: {exc}")
+            continue
+        if out is None:
+            report("WARN", sec, "neither oc nor kubectl on PATH: rendered objects not checked")
+            continue
+        objs: dict[str, str] = {}
+        for doc in re.split(r"^---\s*$", out, flags=re.M):
+            kind = first(r"^kind:\s*(\S+)", doc)
+            if kind:
+                objs.setdefault(kind, doc)
+        role_file = repo / "oc" / "rbac" / tg["stage"] / "role.yaml"
+        n = tg["names"]
+        cm = objs.get("ConfigMap", "")
+        if objs.get("Deployment") and not meta(objs["Deployment"], "namespace"):
+            report("ERROR", sec, f"overlay sets no namespace (expected {tg['ns']}): generated names are matched per namespace")
+        if cm and meta(cm, "name") != n["name"]:
+            report("ERROR", sec, f"ConfigMap name {meta(cm, 'name')}, expected {n['name']}")
+        check_objects(sec, tg["stage"], tg["ns"], n, objs.get("Deployment", ""), objs.get("Service", ""),
+                      objs.get("Route", ""), role_file.read_text() if role_file.exists() else None, cm)
+        if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
+            report("OK", sec, f"{tg['target']}: {n['name']} in {tg['ns']}")
 
 
 # ---------------------------------------------------------------- deploy.py / workflows
@@ -221,14 +305,16 @@ def normalise(text: str) -> list[str]:
     return [ln.rstrip() for ln in text.strip().splitlines()]
 
 
-def audit_files(repo: Path, app: str) -> tuple[set[str], set[str], set[str], set[str], set[str]]:
+def audit_files(repo: Path, app: str, kustomize: bool) -> tuple[set[str], set[str], set[str], set[str], set[str]]:
     sec = "deploy.py"
     dp = repo / "deploy.py"
     if not dp.exists():
         report("ERROR", sec, "missing deploy.py")
     else:
         mine = normalise(dp.read_text())
-        tpl = normalise((TPL / "deploy.py").read_text().replace("__APP__", app))
+        m = re.search(r"^TENANTS: list\[str\] = (.*)$", dp.read_text(), re.M)
+        tpl = normalise((TPL / "deploy.py").read_text().replace("__APP__", app)
+                        .replace("__TENANTS__", m.group(1) if m else "[]"))
         if mine == tpl:
             report("OK", sec, "identical to the template")
         else:
@@ -273,11 +359,14 @@ def audit_files(repo: Path, app: str) -> tuple[set[str], set[str], set[str], set
         optional = set(re.findall(r'\[ -n "\$([A-Z0-9_]+)" \]', t))
         if "ul-git-pr-resul-recherche-runners" not in t:
             report("ERROR", sec, "deploy.yml does not run on the ul-git-pr-resul-recherche-runners group (cluster access)")
-        if "github.ref_name == 'main'" not in t.split("Tag version", 1)[-1].split("\n\n", 1)[0]:
-            report("WARN", sec, "Tag version step not guarded by github.ref_name == 'main'")
+        tag_part = t.split("\n  tag:", 1)[-1].split("\n\n", 1)[0] if kustomize else t.split("Tag version", 1)[-1].split("\n\n", 1)[0]
+        if "github.ref_name == 'main'" not in tag_part:
+            report("WARN", sec, "release tagging not guarded by github.ref_name == 'main'")
+        if kustomize and "fromJSON(needs.targets.outputs.targets)" not in t:
+            report("WARN", sec, "deploy.yml predates the Kustomize template (no per-target matrix): realign when touched")
         if "SENTRY_ENVIRONMENT" in env_vars:
             report("WARN", sec, "SENTRY_ENVIRONMENT read from a GitHub var: pin it in the manifests")
-        if "RESOURCE_NAME" not in t:
+        if not kustomize and "RESOURCE_NAME" not in t:
             report("WARN", sec, "deploy.yml predates the template (no DEPLOY_ENV/RESOURCE_NAME job env): realign when touched")
     if not [r for r in results if r[1] == sec and r[0] == "ERROR"]:
         report("OK", sec, "deploy, test, version-bump, restrict-main-source present")
@@ -315,7 +404,7 @@ def check_token(sec: str, path: str) -> None:
         report("OK", sec, f"OPENSHIFT_TOKEN {when}")
 
 
-def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[str], all_vars: set[str], all_secrets: set[str]) -> None:
+def audit_github(gh_repo: str, targets: list[dict], need_vars: set[str], need_secrets: set[str], all_vars: set[str], all_secrets: set[str]) -> None:
     sec = "github"
     envs = gh(f"repos/{gh_repo}/environments")
     if envs is None:
@@ -338,21 +427,22 @@ def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[
         report("WARN", sec, f"repo-level var {v} is read by no workflow: delete")
     for s in sorted(repo_secrets - all_secrets):
         report("WARN", sec, f"repo-level secret {s} is read by no workflow: delete")
-    extra_envs = set(by_name) - set(ENVS) - {"copilot", "github-pages"}
+    extra_envs = set(by_name) - {tg["target"] for tg in targets} - {"copilot", "github-pages"}
     if extra_envs:
         report("WARN", sec, f"extra environments {sorted(extra_envs)}: not covered by this audit")
 
-    for env, e in ENVS.items():
+    for tg in targets:
+        env, stage = tg["target"], tg["stage"]
         s = f"github/{env}"
         if env not in by_name:
             report("ERROR", s, "environment missing")
             continue
         policy = by_name[env].get("deployment_branch_policy")
-        if env == "prod":
+        if stage == "prod":
             if not policy:
                 report("WARN", s, "no deployment branch policy: prod can be deployed from any branch (restrict to main)")
             elif policy.get("custom_branch_policies"):
-                pol = gh(f"repos/{gh_repo}/environments/prod/deployment-branch-policies") or {}
+                pol = gh(f"repos/{gh_repo}/environments/{env}/deployment-branch-policies") or {}
                 if "main" not in {p["name"] for p in pol.get("branch_policies", [])}:
                     report("ERROR", s, "branch policy does not allow main")
         ev = names(f"repos/{gh_repo}/environments/{env}/variables", "variables")
@@ -368,8 +458,8 @@ def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[
             check_token(s, f"repos/{gh_repo}/environments/{env}/secrets/OPENSHIFT_TOKEN")
         if "OPENSHIFT_NAMESPACE" in ev:
             ns = (gh(f"repos/{gh_repo}/environments/{env}/variables/OPENSHIFT_NAMESPACE") or {}).get("value")
-            if ns != e["ns"]:
-                report("ERROR", s, f"OPENSHIFT_NAMESPACE={ns}, expected {e['ns']}")
+            if ns != tg["ns"]:
+                report("ERROR", s, f"OPENSHIFT_NAMESPACE={ns}, expected {tg['ns']}")
         for v in sorted(need_vars - ev - repo_vars - org_vars):
             report("ERROR", s, f"var {v} read by deploy.yml but not set")
         for v in sorted(need_secrets - es - repo_secrets - org_secrets):
@@ -385,6 +475,31 @@ def audit_github(gh_repo: str, app: str, need_vars: set[str], need_secrets: set[
 
 
 # ---------------------------------------------------------------- main
+
+def detect_targets(repo: Path, app: str) -> tuple[bool, list[dict]]:
+    """(kustomize?, targets) from deploy.py TENANTS, else from oc/overlays/."""
+    tenants: list[str] = []
+    dp = repo / "deploy.py"
+    if dp.exists():
+        m = re.search(r"^TENANTS: list\[str\] = \[(.*)\]$", dp.read_text(), re.M)
+        if m:
+            tenants = [s.strip().strip("\"'") for s in m.group(1).split(",") if s.strip()]
+    overlays = repo / "oc" / "overlays"
+    if not tenants and overlays.is_dir():
+        tenants = sorted(p.name for p in overlays.iterdir() if p.is_dir())
+    kustomize = bool(tenants)
+    targets = []
+    for stage, e in ENVS.items():
+        for tenant in tenants or [None]:
+            targets.append({
+                "target": f"{tenant}-{stage}" if tenant else stage,
+                "tenant": tenant,
+                "stage": stage,
+                "ns": e["ns"],
+                "names": names_for(app, tenant, stage),
+            })
+    return kustomize, targets
+
 
 def detect_app(repo: Path) -> str | None:
     dp = repo / "deploy.py"
@@ -417,13 +532,18 @@ def main() -> None:
         sys.exit("cannot detect the app name, pass --app")
     print(f"# audit {a.repo.resolve()} (app={app})\n")
 
-    for env in ENVS:
-        audit_env(a.repo, app, env)
-    need_vars, need_secrets, all_vars, all_secrets, _ = audit_files(a.repo, app)
+    kustomize, targets = detect_targets(a.repo, app)
+    if kustomize:
+        print(f"Kustomize layout, targets: {', '.join(tg['target'] for tg in targets)}\n")
+        audit_kustomize(a.repo, app, targets)
+    else:
+        for env in ENVS:
+            audit_env(a.repo, app, env)
+    need_vars, need_secrets, all_vars, all_secrets, _ = audit_files(a.repo, app, kustomize)
     if not a.no_github:
         gh_repo = a.gh_repo or detect_gh_repo(a.repo)
         if gh_repo:
-            audit_github(gh_repo, app, need_vars, need_secrets, all_vars, all_secrets)
+            audit_github(gh_repo, targets, need_vars, need_secrets, all_vars, all_secrets)
         else:
             report("WARN", "github", "no GitHub origin remote, pass --gh-repo")
 

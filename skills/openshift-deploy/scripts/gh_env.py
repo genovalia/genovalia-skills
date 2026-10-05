@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Set a GitHub Environment's vars and secrets from a local KEY=value file.
 
-    gh_env.py <repo-dir> --env dev|prod --file dev.env [--gh-repo OWNER/NAME] [--apply]
+    gh_env.py <repo-dir> --env <target> --file dev.env [--gh-repo OWNER/NAME] [--apply]
+
+<target> is a GitHub Environment = a deploy target: dev / prod, or
+<tenant>-dev / <tenant>-prod in the Kustomize layout (deploy.py --list-targets).
 
 Each key goes where .github/workflows/deploy.yml reads it: `secrets.KEY` ->
 `gh secret set --env`, `vars.KEY` -> `gh variable set --env`. A key that
 deploy.yml does not read is refused, so nothing lands in GitHub that no
 workflow uses, and a secret can never end up as a plain-text variable.
 OPENSHIFT_CLUSTER / OPENSHIFT_NAMESPACE (vars) and OPENSHIFT_TOKEN (secret)
-are accepted too; the namespace must match the standard for that env.
+are accepted too; the namespace must match the standard for the target's stage.
 
 Dry run by default: prints the plan with secret values masked. --apply
 writes. Secret values are passed on stdin, never on the command line.
@@ -42,11 +45,14 @@ def read_env_file(path: Path) -> dict[str, str]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("repo", type=Path)
-    ap.add_argument("--env", required=True, choices=sorted(NAMESPACES))
+    ap.add_argument("--env", required=True, help="target / GitHub Environment, e.g. dev, prod, csdcc-dev")
     ap.add_argument("--file", required=True, type=Path)
     ap.add_argument("--gh-repo", help="OWNER/NAME, default: from the origin remote")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
+    stage = a.env.rsplit("-", 1)[-1]
+    if stage not in NAMESPACES:
+        sys.exit(f"--env {a.env}: a target ends in -dev or -prod (or is dev/prod)")
 
     wf = (a.repo / ".github" / "workflows" / "deploy.yml").read_text()
     vars_ = set(re.findall(r"\bvars\.([A-Z0-9_]+)", wf))
@@ -63,9 +69,9 @@ def main() -> None:
 
     values = read_env_file(a.file)
     values.setdefault("OPENSHIFT_CLUSTER", CLUSTER)
-    values.setdefault("OPENSHIFT_NAMESPACE", NAMESPACES[a.env])
-    if values["OPENSHIFT_NAMESPACE"] != NAMESPACES[a.env]:
-        sys.exit(f"OPENSHIFT_NAMESPACE must be {NAMESPACES[a.env]} for {a.env}")
+    values.setdefault("OPENSHIFT_NAMESPACE", NAMESPACES[stage])
+    if values["OPENSHIFT_NAMESPACE"] != NAMESPACES[stage]:
+        sys.exit(f"OPENSHIFT_NAMESPACE must be {NAMESPACES[stage]} for {a.env}")
 
     unknown = sorted(set(values) - vars_ - secrets)
     if unknown:

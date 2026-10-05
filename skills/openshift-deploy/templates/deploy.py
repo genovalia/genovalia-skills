@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Build, tag, push and apply __APP__ to OpenShift.
 
-Usage: python deploy.py <dev|prod> [--no-build] [--no-push] [--no-apply]
+Usage: python deploy.py <target> [--no-build] [--no-push] [--no-apply]
        [--token TOKEN --non-interactive]  (for CI)
+       python deploy.py --list-targets <dev|prod>   (JSON list, for the CI matrix)
+       python deploy.py --print-version
 
-Standard genovalia-skills/openshift-deploy: only APP differs between repos.
+Standard genovalia-skills/openshift-deploy: only APP and TENANTS differ
+between repos.
 """
 import argparse
 import json
@@ -17,20 +20,52 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 APP = "__APP__"
+# Empty: one deployment per stage, plain manifests in oc/<stage>/, targets
+# "dev" and "prod". Several tenants (same app deployed for several clients):
+# Kustomize overlays in oc/overlays/<tenant>/<stage>/, targets "<tenant>-<stage>".
+TENANTS: list[str] = __TENANTS__
 
 SERVER = "api.ul-pca-pr-ul01.ulaval.ca:6443"
 REGISTRY = "registre.apps.ul-pca-pr-ul01.ulaval.ca"
 
-# dev and prod live in separate OpenShift namespaces. Every resource of an
-# environment is named after `name`: Deployment <name>, Service <name>-service,
-# Route <name>-route, ConfigMap <name>, Secret <name>-secrets, image <name>.
-ENVIRONMENTS = {
-    "dev": {"namespace": "ul-val-genovalia-dv", "name": f"{APP}-dev"},
-    "prod": {"namespace": "ul-val-genovalia-pr", "name": APP},
-}
+# dev and prod live in separate OpenShift namespaces.
+NAMESPACES = {"dev": "ul-val-genovalia-dv", "prod": "ul-val-genovalia-pr"}
+
+
+def build_targets() -> dict[str, dict]:
+    """Deploy target -> stage, namespace, manifest dir and resource name.
+
+    `name` is the Deployment, ConfigMap and image name. Plain layout: Service
+    <name>-service, Route <name>-route, Secret <name>-secrets. Kustomize adds
+    the prefix/suffix around each base name instead: <tenant>-<app>-service[-dev].
+    """
+    targets = {}
+    for stage, namespace in NAMESPACES.items():
+        suffix = "-dev" if stage == "dev" else ""
+        if not TENANTS:
+            targets[stage] = {
+                "stage": stage,
+                "namespace": namespace,
+                "name": f"{APP}{suffix}",
+                "manifest": f"oc/{stage}",
+                "kustomize": False,
+            }
+        for tenant in TENANTS:
+            targets[f"{tenant}-{stage}"] = {
+                "stage": stage,
+                "namespace": namespace,
+                "name": f"{tenant}-{APP}{suffix}",
+                "manifest": f"oc/overlays/{tenant}/{stage}",
+                "kustomize": True,
+            }
+    return targets
+
+
+TARGETS = build_targets()
 
 # Bootstrap-only: applied once by hand with elevated credentials (see the
-# openshift-deploy skill), not by this script. The CI service account's Role
+# openshift-deploy skill), not by this script. In the Kustomize layout they
+# live apart, in oc/rbac/<stage>/, and the overlays never include them. The CI service account's Role
 # has nothing on serviceaccounts/roles/rolebindings, so applying these here
 # would 403 and abort every deploy.
 BOOTSTRAP_ONLY_FILES = {"service-account.yaml", "role.yaml", "role-binding.yaml"}
@@ -46,9 +81,9 @@ def get_version() -> str:
     return json.loads(Path("package.json").read_text())["version"]
 
 
-def run(cmd: list[str]) -> None:
+def run(cmd: list[str], input: str | None = None) -> None:
     logger.info("$ %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, input=input, text=input is not None or None)
 
 
 def is_logged_in_to_oc() -> bool:
@@ -106,32 +141,34 @@ def push(image: str, version: str) -> None:
     run(["docker", "push", f"{image}:latest"])
 
 
-def manifest_files(env: str) -> list[str]:
+def manifest_files(manifest: str) -> list[str]:
     files = sorted(
         str(p)
-        for p in Path("oc", env).glob("*.yaml")
+        for p in Path(manifest).glob("*.yaml")
         if p.name not in BOOTSTRAP_ONLY_FILES
     )
     if not files:
-        raise RuntimeError(f"No manifest files found in oc/{env}/")
+        raise RuntimeError(f"No manifest files found in {manifest}/")
     return files
 
 
-def apply_and_rollout(env: str, namespace: str, name: str, version: str) -> None:
-    file_args = [arg for f in manifest_files(env) for arg in ("-f", f)]
-    run(["oc", "apply", "-n", namespace, *file_args])
-    # Tag every applied object (Deployment, Service, Route, ...) with the deployed version.
-    run(
-        [
-            "oc",
-            "label",
-            "--overwrite",
-            "-n",
-            namespace,
-            *file_args,
-            f"app.kubernetes.io/version={version}",
-        ]
-    )
+def apply_and_rollout(target: dict, version: str) -> None:
+    namespace, name = target["namespace"], target["name"]
+    label = f"app.kubernetes.io/version={version}"
+    if target["kustomize"]:
+        # Rendered once and fed to both apply and label, so both see the
+        # same objects (and `oc label -k` support varies across versions).
+        logger.info("$ oc kustomize %s", target["manifest"])
+        rendered = subprocess.run(
+            ["oc", "kustomize", target["manifest"]], check=True, capture_output=True, text=True
+        ).stdout
+        run(["oc", "apply", "-n", namespace, "-f", "-"], input=rendered)
+        run(["oc", "label", "--overwrite", "-n", namespace, "-f", "-", label], input=rendered)
+    else:
+        file_args = [arg for f in manifest_files(target["manifest"]) for arg in ("-f", f)]
+        run(["oc", "apply", "-n", namespace, *file_args])
+        # Tag every applied object (Deployment, Service, Route, ...) with the deployed version.
+        run(["oc", "label", "--overwrite", "-n", namespace, *file_args, label])
     # Unconditional restart: `:latest` did not change name, and the ConfigMap/
     # Secret synced just before this step are only read at pod start.
     run(["oc", "rollout", "restart", "-n", namespace, f"deployment/{name}"])
@@ -140,7 +177,7 @@ def apply_and_rollout(env: str, namespace: str, name: str, version: str) -> None
 
 def write_github_output(env: str, version: str, deployment: str) -> None:
     # Lets the CI workflow read these back as step outputs (e.g. for a Slack
-    # notification) without duplicating the ENVIRONMENTS mapping in YAML.
+    # notification) without duplicating the TARGETS mapping in YAML.
     output_file = os.environ.get("GITHUB_OUTPUT")
     if not output_file:
         return
@@ -154,7 +191,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=f"Build, push and apply {APP} to OpenShift"
     )
-    parser.add_argument("env", choices=sorted(ENVIRONMENTS.keys()))
+    parser.add_argument("target", nargs="?", choices=sorted(TARGETS))
+    parser.add_argument(
+        "--list-targets",
+        choices=sorted(NAMESPACES),
+        help="print the targets of a stage as a JSON list and exit",
+    )
+    parser.add_argument("--print-version", action="store_true", help="print the version and exit")
     parser.add_argument("--no-build", action="store_true", help="skip build step")
     parser.add_argument("--no-push", action="store_true", help="skip push step")
     parser.add_argument(
@@ -182,9 +225,17 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = ENVIRONMENTS[args.env]
-    namespace, name = config["namespace"], config["name"]
-    image = f"{REGISTRY}/{namespace}/{name}"
+    if args.list_targets:
+        print(json.dumps([t for t, c in TARGETS.items() if c["stage"] == args.list_targets]))
+        return
+    if args.print_version:
+        print(get_version())
+        return
+    if not args.target:
+        parser.error("a target is required")
+
+    target = TARGETS[args.target]
+    image = f"{REGISTRY}/{target['namespace']}/{target['name']}"
     version = get_version()
 
     if not args.no_build:
@@ -199,9 +250,9 @@ def main() -> None:
         push(image, version)
 
     if not args.no_apply:
-        apply_and_rollout(args.env, namespace, name, version)
+        apply_and_rollout(target, version)
 
-    write_github_output(args.env, version, name)
+    write_github_output(args.target, version, target["name"])
     logger.info("Done.")
 
 

@@ -1,0 +1,150 @@
+name: Deploy
+
+# Kustomize layout: several targets per stage, one per tenant
+# (deploy.py TENANTS). A push deploys every target of the branch's stage in
+# parallel; a manual run deploys exactly one target.
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target to deploy (deploy.py --list-targets dev|prod)"
+        required: true
+        type: choice
+        options:
+@@TARGET_OPTIONS@@
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+      stage: ${{ steps.list.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List targets
+        id: list
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
+            echo "targets=[\"$INPUT_TARGET\"]" >> "$GITHUB_OUTPUT"
+            echo "stage=${INPUT_TARGET##*-}" >> "$GITHUB_OUTPUT"
+          else
+            STAGE=${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+            echo "targets=$(python3 deploy.py --list-targets "$STAGE")" >> "$GITHUB_OUTPUT"
+            echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: targets
+    runs-on:
+      group: 'ul-git-pr-resul-recherche-runners'
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      # One tenant failing must not cancel the others mid-rollout.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    # Each target is its own GitHub Environment: its OPENSHIFT_* (dev and
+    # prod are separate namespaces) and its own config values.
+    environment: ${{ matrix.target }}
+    concurrency:
+      group: deploy-${{ matrix.target }}
+      cancel-in-progress: false
+    env:
+      TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # deploy.py drives `oc` directly (kustomize, rollout), so it must be on PATH.
+      - name: Install oc
+        uses: redhat-actions/openshift-tools-installer@v1.13.1
+        with:
+          oc: latest
+
+      - name: Authenticate and set context
+        uses: redhat-actions/oc-login@v1.3
+        with:
+          openshift_server_url: ${{ vars.OPENSHIFT_CLUSTER }}
+          openshift_token: ${{ secrets.OPENSHIFT_TOKEN }}
+          namespace: ${{ vars.OPENSHIFT_NAMESPACE }}
+
+      # GitHub is the source of truth for these values. They are written as the
+      # .env files the overlay's generators read, so kustomize owns the
+      # ConfigMap/Secret and renames the Deployment's references to them.
+      # One KEY=value per line: a value containing a newline cannot be expressed.
+      - name: Render env files
+        env:
+@@ENV@@
+        run: |
+          OVERLAY="oc/overlays/${TARGET%-*}/${TARGET##*-}"
+          missing=0
+          for k in @@REQUIRED@@; do
+            [ -n "${!k}" ] || { echo "::error::$k is empty in the $TARGET environment"; missing=1; }
+          done
+          [ "$missing" = 0 ]
+          # Optional keys are only written when set, so an empty value never
+          # overrides the app's own default.
+          {
+@@CONFIG_LINES@@
+          } > "$OVERLAY/config.env"
+# >>> secrets
+          {
+@@SECRET_LINES@@
+          } > "$OVERLAY/secret.env"
+# <<< secrets
+
+      - name: Build, push and apply
+        id: deploy
+        env:
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+        run: python3 deploy.py "$TARGET" --token "$OPENSHIFT_TOKEN" --non-interactive
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: "${{ needs.targets.outputs.stage == 'prod' && 'deployment-prod' || 'deployment-dev' }}"
+            text: ":rocket: *__APP__* deployed — version `${{ steps.deploy.outputs.version }}` to *${{ matrix.target }}* (`${{ steps.deploy.outputs.deployment }}`)"
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: "github-ci"
+            text: ":x: *${{ github.event.repository.name }}* — `Deploy` failed for *${{ matrix.target }}* (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|logs>)"
+
+  # Once, after every target: several prod targets pushing the same tag in
+  # parallel would race. Only for a successful prod deploy built from main.
+  tag:
+    needs: [targets, deploy]
+    if: success() && needs.targets.outputs.stage == 'prod' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag version
+        run: |
+          TAG="v$(python3 deploy.py --print-version)"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists, skipping."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
