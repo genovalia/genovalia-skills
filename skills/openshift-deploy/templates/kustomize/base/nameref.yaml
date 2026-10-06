@@ -1,0 +1,10 @@
+# Kustomize knows the references between built-in kinds, so it rewrites the
+# ConfigMap/Secret names in a PodSpec by itself. OpenShift's Route is not one
+# of those: without this, namePrefix/nameSuffix rename the Service and leave
+# the Route pointing at a name that does not exist.
+nameReference:
+    - kind: Service
+      version: v1
+      fieldSpecs:
+          - path: spec/to/name
+            kind: Route

@@ -1,0 +1,19 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+    name: __APP__-route
+    labels:
+        app: __APP__
+spec:
+    # Placeholder: each overlay patches its own host.
+    host: __APP__.apps.genovalia.ulaval.ca
+    port:
+        targetPort: __PORT__-tcp
+    tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+    to:
+        kind: Service
+        name: __APP__-service
+        weight: 100
+    wildcardPolicy: None

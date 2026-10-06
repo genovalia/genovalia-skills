@@ -1,0 +1,62 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Target __TARGET__. Everything that varies per target is declared here, in
+# the leaf: kustomize matches name references on (name, namespace) and only
+# renames references to objects of this same build, so the namespace, the
+# renames and the generators must all sit in one kustomization. Split them
+# across layers and the Deployment silently points at another tenant's config.
+namespace: __NS__
+
+resources:
+    - __BASE__
+
+# >>> tenant
+namePrefix: __TENANT__-
+# <<< tenant
+# >>> devsuffix
+nameSuffix: -dev
+# <<< devsuffix
+
+labels:
+    # Only `app` goes into the selectors: spec.selector is immutable once deployed.
+    - pairs:
+          app: __NAME__
+      includeSelectors: true
+    - pairs:
+          environment: __STAGE__
+      includeTemplates: true
+
+images:
+    - name: __APP__
+      newName: registre.apps.ul-pca-pr-ul01.ulaval.ca/__NS__/__NAME__
+      newTag: latest
+
+# config.env / secret.env are written by the Deploy workflow from this
+# target's GitHub Environment and are gitignored. No content-hash suffix: the
+# CI Role scopes access by name, and deploy.py restarts the Deployment anyway.
+configMapGenerator:
+    - name: __APP__
+      envs: [config.env]
+# >>> sentry
+      # Pinned here, never a GitHub variable: Sentry alert rules match on
+      # exactly "dev" / "prod", whatever the tenant.
+      literals: [SENTRY_ENVIRONMENT=__STAGE__]
+# <<< sentry
+      options:
+          disableNameSuffixHash: true
+# >>> secrets
+secretGenerator:
+    - name: __APP__-secrets
+      envs: [secret.env]
+      options:
+          disableNameSuffixHash: true
+# <<< secrets
+
+patches:
+    - target:
+          kind: Route
+      patch: |-
+          - op: replace
+            path: /spec/host
+            value: __HOST__

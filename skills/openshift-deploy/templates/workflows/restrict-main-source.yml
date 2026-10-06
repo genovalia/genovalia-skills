@@ -1,0 +1,27 @@
+name: Restrict main to PRs from dev
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Vérifier que la PR provient de dev
+        run: |
+          if [ "${{ github.head_ref }}" != "dev" ]; then
+            echo "::error::Les PR vers main doivent provenir de la branche dev (source actuelle : ${{ github.head_ref }})."
+            exit 1
+          fi
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          errors: true
+          payload: |
+            channel: "github-ci"
+            text: ":x: *${{ github.event.repository.name }}* — `${{ github.workflow }}` failed on <${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}> (<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|logs>)"
