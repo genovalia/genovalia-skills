@@ -12,8 +12,8 @@ Tu prépares et valides des jeux de génotypage publics pour data-explorer et me
    ```python
    FILES = [(url, nom_local), ...]          # lu par fetch.py
    MANUAL = [(id, document, url, dest, raison), ...]   # ce qui n'a pas pu être téléchargé (optionnel)
-   def CFG(h): return dict(species=..., taxid=..., geonames=..., bbox=..., ...)   # même forme que DATASETS dans build.py
-   def prepare(raw, out, h): ...            # même contrat que prepare_<id> ; h = module build (h.P, h.CC0, h.write_vcf...)
+   def CFG(h): return dict(species=..., taxid=..., geonames=..., bbox=..., ...)   # entrée de DATASETS (modèle : n'importe quel prep/<id>.py)
+   def prepare(raw, out, h): ...            # renvoie dict(vcf, samples, ...) ; h = module build (h.P, h.CC0, h.write_vcf...) ; ne nomme jamais une variable locale « h »
    ```
    Si un helper manque, écris-le dans ton module. Si tu trouves un bug dans `build.py`, ne le corrige pas : signale-le dans ton rapport.
 2. Téléchargement : depuis `~/genovalia-injection`, `.venv/bin/python fetch.py <id>`. Articles et suppléments en accès libre dans `<id>/raw/papers/` (et `supp/`) : Europe PMC `fullTextXML` + `supplementaryFiles`, bioRxiv, éditeurs OA (voir `papers.py` pour les recettes). Ce qui échoue va dans `MANUAL` avec l'URL.
