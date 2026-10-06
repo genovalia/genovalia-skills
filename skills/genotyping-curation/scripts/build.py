@@ -15,11 +15,9 @@ from said import said
 
 ROOT = Path(__file__).resolve().parent
 TODAY = __import__("datetime").date.today().isoformat()
-REPO = Path(os.environ["GENOVALIA_DATA_EXPLORER_REPO"])  # local checkout of genovalia/data-explorer (backend + metadata-api)
 METADONNEES = ROOT / ".metadonnees"  # clone of genovalia/metadonnees (validator, dictionary, existing schemas)
 if not METADONNEES.exists():
     subprocess.run(["gh", "repo", "clone", "genovalia/metadonnees", str(METADONNEES), "--", "-q"], check=True)
-DUMP = Path(os.environ["GENOVALIA_DUMP"])  # local dump of the metadata-api DB, used to check existing_ids()
 SEDNA = "https://sedna.apps.genovalia.ulaval.ca/datasets/"
 CC0 = "https://creativecommons.org/publicdomain/zero/1.0/"
 CCBY = "https://creativecommons.org/licenses/by/4.0/"
@@ -167,21 +165,26 @@ def letters_to_rows(markers, genos, allele_split, missing, chrom_pos=None, drop=
 
 # Attribute catalogue. Wording of the shared attributes is copied from the existing
 # lymdis1/malvil1 schemas so every Genovalia dataset describes them identically.
+# Harmonised on 2026-10-01 (review of metadata-api /v1/oca-properties, ednaspp excluded):
+# units written in full words (decimal degree, meter; UCUM code kept in unit_framing),
+# no ellipsis in definitions.
 ATTR = {
     "id": ("Text", "id", "ID referring to the individual in the genotyping file (vcf)", None),
     "organism": ("Text", "organism", "Species name in latin according to the Linneaus classification", None),
     "country": ("Text", "country", "Country of origin of the individuals sampled", None),
-    "latitude": ("Numeric", "latitude", "Latitude in decimal degree. Ex: -42.23452", "degree"),
-    "longitude": ("Numeric", "longitude", "Longitude in decimal degree. Ex: -42.23452", "degree"),
+    "latitude": ("Numeric", "latitude", "Latitude in decimal degree. Ex: -42.23452", "decimal degree"),
+    "longitude": ("Numeric", "longitude", "Longitude in decimal degree. Ex: -42.23452", "decimal degree"),
+    "elevation": ("Numeric", "elevation", "Elevation at the sites where individuals were collected (in meters)", "meter"),
     "site_code": ("Text", "site_code", "Code of the sampling site as used in the source publication", None),
     "site_type": ("Text", "site_type", "General environmental or habitat category of the sampling site", None),
     "region": ("Text", "region", "Geographic region of the sampling site", None),
-    "sampling_year": ("Numeric", "sampling_year", "Year the individual was sampled", None),
+    "sampling_year": ("Numeric", "sampling_year", "Year in which the sample was collected", None),
     "sample_tissue": ("Text", "sample_tissue", "The type of tissue sampled from the individual and used for DNA extraction", None),
-    "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA, RNA...", None),
-    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain genotypes, such as SNP chip, genotyping-by-sequencing, etc.", None),
+    "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
+    "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
+    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain genotypes, such as whole genome sequencing, genotyping-by-sequencing or SNP chip.", None),
 }
-UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
+UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "decimal degree": "deg", "meter": "m", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
         "um": "um", "nm": "nm", "kg/m3": "kg/m3", "GPa": "GPa", "ug/m": "ug/m", "m2/kg": "m2/kg", "1/mm2": "/mm2",
         "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d"}
 
@@ -262,7 +265,12 @@ def person(name, orcid=None, roles=("author",)):
 def build_dcat(ds_id, m):
     """Same shape as the Genovalia DCAT builder (buildObj) and the metadonnees repo.
     'dct' is added to @context because metadata-api reads dct:relation and dct:* keys
-    inside distributions (both prefixes expand to http://purl.org/dc/terms/)."""
+    inside distributions (both prefixes expand to http://purl.org/dc/terms/).
+    License, distribution and dct:relation are left empty, as on every metadonnees dataset
+    (AGENTS.md "Deliberately left for later"): Sedna takes the access-request link from
+    dcat:distribution -> dcat:accessURL, so a repository URL there would replace Genovalia's
+    access form. m["license"], m["distributions"] and m["relations"] stay in the recipes as
+    provenance for QC_REPORT/issues.json only."""
     orcid = lambda p: f"https://orcid.org/{p['orcid']}" if p.get("orcid") else None
     agent = lambda p: {k: v for k, v in {"@id": orcid(p), "@type": "prov:Person", "foaf:name": p["name"]}.items() if v}
     d = {
@@ -280,8 +288,7 @@ def build_dcat(ds_id, m):
         "dcat:contactPoint": {"@type": "vcard:Kind", "vcard:fn": "Genovalia", "vcard:hasEmail": {"@id": "mailto:genovalia@ulaval.ca"}},
         "dcat:keyword": m["keywords"],
         "dcat:theme": f"https://www.ncbi.nlm.nih.gov/datasets/taxonomy/{m['taxid']}/",
-        "dcat:distribution": [{"@type": "dcat:Distribution", "dct:title": t, "dcat:accessURL": u, "dct:license": m["license"]}
-                              for t, u in m["distributions"]],
+        "dcat:distribution": [],
     }
     if m.get("modified"): d["dcterms:modified"] = m["modified"]
     if m.get("years"):
@@ -291,12 +298,11 @@ def build_dcat(ds_id, m):
         d["dcterms:temporal"] = t
     d["dcterms:spatial"] = f"https://sws.geonames.org/{m['geonames']}/"
     d["dcat:version"] = m.get("version", "1.0.0")
-    d["dcterms:license"] = m["license"]
+    d["dcterms:license"] = ""
     d["dcterms:accessRights"] = OPEN
     c = m["people"][0]
     d["dcterms:creator"] = {k: v for k, v in {"@id": orcid(c), "@type": "foaf:Person", "foaf:name": c["name"]}.items() if v}
     d["dcat:qualifiedAttribution"] = [{"@type": "prov:Attribution", "prov:agent": agent(p), "dcat:hadRole": p["roles"]} for p in m["people"]]
-    d["dct:relation"] = [f"https://doi.org/{x}" for x in m["relations"]]
     return d
 
 
@@ -329,28 +335,39 @@ def _load_module(name, path):
     return mod
 
 
-meta_oca = _load_module("meta_oca", REPO / "metadata-api/app/services/oca.py")
-meta_dcat = _load_module("meta_dcat", REPO / "metadata-api/app/services/dcat.py")
-de_oca = _load_module("de_oca", REPO / "data-explorer-backend/app/services/oca_schema.py")
 sys.path.insert(0, str(METADONNEES))
 from catalogue_cli import check_dcat  # noqa: E402  (genovalia/metadonnees validate command)
 
 
-def existing_ids():
-    """metadata_api.datasets ids and data_explorer.dataset.dataset_id values in the SQL dump."""
-    ids, section = set(), None
-    for line in open(DUMP, encoding="utf-8"):
-        if line.startswith("COPY "):
-            section = line.split()[1]
-            continue
-        if line.startswith("\\."):
-            section = None
-            continue
-        if section == "metadata_api.datasets":
-            ids.add(line.split("\t", 1)[0])
-        elif section == "data_explorer.dataset":
-            v = line.rstrip("\n").split("\t")[-1]
-            if v != "\\N": ids.add(v)
+METADATA_API = "https://metadata-api.apps.genovalia.ulaval.ca/v1"  # public GETs, spec at …/docs
+
+
+def metadata_api(path, **params):
+    """Read-only GET on metadata-api (no key needed for reads). Returns None if unreachable."""
+    try:
+        r = requests.get(f"{METADATA_API}/{path}", params=params, timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        print(f"metadata-api injoignable ({path}) : {e}", flush=True)
+        return None
+
+
+def existing_ids(workspace=True):
+    """IDs already taken: datasets loaded in metadata-api and metadonnees dataset folders, plus
+    (workspace=True, for choosing a new ID) the workspace's own dataset folders (no DB dump any more).
+    metadonnees replaced catalogue.json by catalog.json (2026-10-01), which no longer lists datasets:
+    the old file is read only if present."""
+    ids = {f.parent.name for f in METADONNEES.glob("*/dcat.json")}
+    if (old := METADONNEES / "catalogue.json").exists():
+        ids |= {e["id"] for e in json.loads(old.read_text()).get("content", [])}
+    if workspace:
+        ids |= {p.name for p in ROOT.iterdir() if p.is_dir() and ID_RE.match(p.name)}
+    page = 1
+    while (lst := metadata_api("datasets", page=page, page_size=100)) and lst["content"]:
+        ids |= {d["identifier"] for d in lst["content"]}
+        if page * lst["page_size"] >= lst["total"]: break
+        page += 1
     return ids
 
 
@@ -419,24 +436,13 @@ def run_qc(ds_id, cfg, res, st):
     oca = res["oca"]
     bad_said = verify_saids(oca)
     if bad_said: blocking.append(f"SAID invalides : {bad_said}")
-    props = meta_oca.extract_properties(oca)
-    oca_attrs = {p["name"] for p in props}
+    oca_attrs = set(oca["oca_bundle"]["bundle"]["capture_base"]["attributes"])
     if oca_attrs != set(df.columns): blocking.append(f"attributs OCA ≠ colonnes CSV : {sorted(oca_attrs ^ set(df.columns))}")
-    pj = de_oca.OcaSchema._parse_json_file(json.dumps(oca).encode())
-    de_vars = de_oca.OcaSchema(pj["root_content"], pj["format_content"], pj["information_content"],
-                               pj["label_content"], pj["unit_content"]).variables
-    if {v["key"] for v in de_vars} != set(df.columns): blocking.append("le parseur OCA de data-explorer ne retrouve pas toutes les colonnes")
 
     # DCAT
     dcat = res["dcat"]
     errs, warns = check_dcat(ds_id, dcat)
-    try:
-        facts = meta_dcat.extract_dataset_facts(dcat)
-    except Exception as e:  # DcatFieldError
-        errs.append(f"metadata-api refuse le DCAT : {e}")
-        facts = {}
     for e in errs: blocking.append(f"DCAT : {e}")
-    if facts and not facts["related_urls"]: minor.append("DCAT : dct:relation non lu par metadata-api")
 
     ref = res.get("reference", "?")
     row = {
@@ -462,7 +468,7 @@ def run_qc(ds_id, cfg, res, st):
            f"| Multialléliques / POS non numériques / doublons CHROM:POS | {st['multiallelic']} / {st['non_numeric_pos']} / {st['dup_pos']} |",
            f"| Chargeur data-explorer (cyvcf2) | {'OK' if ld['ok'] else 'ÉCHEC'} — {ld['samples']} individus, {ld['variants']} variants |",
            f"| Référence génomique | {ref} |", f"| SAID OCA | {'valides' if not bad_said else bad_said} |",
-           f"| DCAT (validate metadonnees + metadata-api) | {'OK' if not errs else len(errs)} erreurs, avertissements : {warns or 'aucun'} |", "",
+           f"| DCAT (validate metadonnees) | {'OK' if not errs else len(errs)} erreurs, avertissements : {warns or 'aucun'} |", "",
            "## Problèmes bloquants", ""] + ([f"- {x}" for x in blocking] or ["Aucun."]) + [
            "", "## Problèmes mineurs / à vérifier", ""] + ([f"- {x}" for x in minor] or ["Aucun."]) + [
            "", "## Décisions de préparation", ""] + [f"- {x}" for x in res.get("decisions", [])]
@@ -471,9 +477,13 @@ def run_qc(ds_id, cfg, res, st):
     if high: rep += ["", f"## Individus > {MISSING_RATE_FLAG:.0%} manquants", "", ", ".join(f"{k} ({smiss[k]:.0%})" for k in high[:200])]
     if het_out: rep += ["", "## Individus à hétérozygotie élevée", "", ", ".join(f"{k} ({st['sample_het'][k]:.1%})" for k in het_out)]
     rep += ["", "## Colonnes du CSV", "", "| Colonne | Type OCA | Unité | Non-vides | Valeurs distinctes |", "|---|---|---|---|---|"]
-    types = {p["name"]: p for p in props}
+    # Type and unit read from the OCA bundle itself (the metadata-api/data-explorer parsers that gave `props` were dropped)
+    bundle = oca["oca_bundle"]["bundle"]
+    types = bundle["capture_base"]["attributes"]
+    unit_ov = bundle["overlays"].get("unit", {})
+    units = (unit_ov[0] if isinstance(unit_ov, list) else unit_ov).get("attribute_unit", {}) if unit_ov else {}
     for c in df.columns:
-        rep.append(f"| {c} | {types.get(c, {}).get('type')} | {types.get(c, {}).get('unit') or ''} | {df[c].notna().sum()} | {df[c].nunique()} |")
+        rep.append(f"| {c} | {types.get(c)} | {units.get(c, '')} | {df[c].notna().sum()} | {df[c].nunique()} |")
     rep += ["", "## En-tête du VCF (extrait)", "", "```", *st["meta"][:15], "```", ""]
     return row, blocking, minor, "\n".join(rep)
 
@@ -606,7 +616,7 @@ def prepare_picmar2(raw, out):
                        "ancestry_k4_redspruce": ("Numeric", "ancestry_k4_redspruce", "ADMIXTURE ancestry coefficient, K=4, red spruce cluster", None),
                        "best_cluster_k4": ("Text", "best_cluster_k4", "Cluster with the highest ancestry coefficient at K=4", None),
                        "best_cluster_k6": ("Text", "best_cluster_k6", "Cluster with the highest ancestry coefficient at K=6", None),
-                       "provenance_elevation": ("Numeric", "provenance_elevation", "Elevation of the seed provenance", "m"),
+                       "provenance_elevation": ("Numeric", "provenance_elevation", "Elevation of the seed provenance", "meter"),
                        "provenance_mat": ("Numeric", "provenance_mat", "Mean annual temperature at the seed provenance", "degree Celsius"),
                        "provenance_tp": ("Numeric", "provenance_tp", "Total annual precipitation at the seed provenance", "mm"),
                        "provenance_cmi": ("Numeric", "provenance_cmi", "Climate moisture index at the seed provenance", None),
@@ -685,7 +695,7 @@ def _salfon_table1(txt):
     t = re.sub(r"[ \t]*\n-\n", " -", txt)  # pypdf splits negative numbers onto their own line
     t = re.sub(r"[ \t]*\nanadro\nmous", " anadromous", t)
     rows = re.findall(r"^([A-Z]{3}) +([\d.]+) +(-[\d.]+) +([A-Za-z]+) +(\d+) +(\d+) +(\S+) +(-?[\d.]+) +([\d.]+) +([\d.]+)", t, re.M)
-    return pd.DataFrame(rows, columns=["site_code", "latitude", "longitude", "site_type", "altitude", "n_t1", "lake_size",
+    return pd.DataFrame(rows, columns=["site_code", "latitude", "longitude", "site_type", "elevation", "n_t1", "lake_size",
                                        "min_air_temperature", "total_radiation", "growing_degree_days"])
 
 
@@ -711,7 +721,7 @@ def prepare_salfon1(raw, out):
     df = df.merge(sites, on="site_code", how="left").merge(env.drop(columns=["lat_s1", "lon_s1"]), on="site_code", how="left")
     missing = sorted(set(df.site_code) - set(sites.site_code))
     if missing: minor.append(f"{len(missing)} sites du VCF absents de la Table 1 extraite (pas de coordonnées) : {missing}")
-    for c in ["latitude", "longitude", "altitude", "min_air_temperature", "total_radiation", "growing_degree_days"]:
+    for c in ["latitude", "longitude", "elevation", "min_air_temperature", "total_radiation", "growing_degree_days"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df["lake_size"] = pd.to_numeric(df.lake_size.replace({"NA": None, "-": None}), errors="coerce")
     df["organism"], df["country"] = "Salvelinus fontinalis", "Canada"
@@ -720,12 +730,12 @@ def prepare_salfon1(raw, out):
     minor.append("Année d'échantillonnage connue seulement par type de site (lacs/rivières 2014-2015, anadromes 2000-2001) : colonne sampling_period")
     dec.append(f"Effectifs : la Table 1 du preprint totalise {sites.n_t1.astype(int).sum()} individus ; l'article publié (10.1111/mec.15566) confirme 1 416 individus sur 50 sites, soit le VCF déposé.")
     df = df.rename(columns={"sampling_year": "sampling_period"})
-    cols = ["id", "organism", "country", "latitude", "longitude", "site_code", "site_type", "region", "river_drainage", "altitude", "lake_size",
+    cols = ["id", "organism", "country", "latitude", "longitude", "site_code", "site_type", "region", "river_drainage", "elevation", "lake_size",
             "mean_air_temperature", "mean_min_air_temperature", "mean_max_air_temperature", "min_air_temperature", "frost_free_days",
             "total_radiation", "growing_degree_days", "sampling_period", "sequenced_molecule", "genotyping_technology"]
     return dict(vcf=out / "salfon1.vcf", samples=df[cols], vcf_origin="fourni (Dryad → Zenodo)", attr_level="site seulement (préfixe de l'ID)",
                 reference="NC_036838.1… (génome de l'omble chevalier, Salvelinus sp. ASM291031v2)", decisions=dec, minor=minor,
-                extra={"altitude": ("Numeric", "altitude", "Altitude of the sampling site", "m"),
+                extra={  # elevation: from ATTR (meter)
                        "lake_size": ("Numeric", "lake_size", "Lake surface area (lakes only)", "ha"),
                        "min_air_temperature": ("Numeric", "min_air_temperature", "Average of lowest minimum air temperature (BioSim 2004-2015), as reported in Table 1 of the source preprint", "degree Celsius"),
                        "total_radiation": ("Numeric", "total_radiation", "Average of total radiation (BioSim), as reported in Table 1 of the source preprint", "MJ/m2"),
@@ -799,7 +809,6 @@ def prepare_picgla2(raw, out):
     return dict(vcf=out / "picgla2.vcf", samples=df[cols], vcf_origin="converti (matrice TXT de lettres)", attr_level="individuels (famille, bloc, 12 phénotypes)",
                 reference="aucune (marqueurs géniques PGAS1)", decisions=dec, minor=minor,
                 extra={"site_code": ("Text", "test_site", "Provenance-progeny test site where the tree grows and was sampled", None),
-                       "elevation": ("Numeric", "elevation", "Elevation of the test site", "m"),
                        "latitude": ("Numeric", "latitude", "Latitude of the test site (not of the seed provenance), decimal degrees", "degree"),
                        "longitude": ("Numeric", "longitude", "Longitude of the test site (not of the seed provenance), decimal degrees", "degree"),
                        "genetic_test": ("Text", "genetic_test", "Identifier of the progeny test (E560A3)", None),
@@ -1060,8 +1069,11 @@ def process(ds_id, cfg, taken):
 def main(only):
     (ROOT / ".tmp").mkdir(exist_ok=True)
     assert not verify_saids(json.loads((METADONNEES / "lymdis1/oca.json").read_text())), "SAID self-test failed"
-    taken = existing_ids()
-    dictionary = json.loads((METADONNEES / "dictionary.json").read_text())
+    taken = existing_ids(workspace=False)  # the workspace folders are the datasets being built
+    # metadonnees dropped dictionary.json (2026-09-29): compare with the keywords already in use
+    # (metadonnees DCATs + metadata-api /keywords and /dictionary)
+    dictionary = {k for f in METADONNEES.glob("*/dcat.json") for k in json.loads(f.read_text()).get("dcat:keyword", [])}
+    dictionary |= {k["value"] for k in metadata_api("keywords") or []} | set(metadata_api("dictionary", lang="en") or {})
     rows, details, new_kw = [], [], set()
     for ds_id, cfg in DATASETS.items():
         if only and ds_id not in only: continue
@@ -1089,10 +1101,10 @@ def main(only):
            "- Description : 1360 → nombre réel d'individus du VCF ; mention du Groenland (4 sites GRE).",
            "- Titre : « Caplin » → « Capelin » ; mot-clé « caplin » → « capelin ».",
            "- ORCID de Hugo Cayuela : 0000-0003-3250-6295 → 0000-0002-3529-0736 (celui du dépôt Dryad). **Les deux dossiers ORCID existent au nom de Hugo Cayuela, sans publications : doublon à signaler, choix à confirmer.**",
-           "- Licence CC0 et distribution Dryad ajoutées ; `dct:relation` vers l'article, le preprint et le DOI Dryad.",
+           "- Licence, distribution et `dct:relation` laissées vides, comme sur tous les jeux de metadonnees (le lien de demande d'accès de Sedna vient de `dcat:distribution`).",
            "- `dcterms:spatial` : Canada → North Atlantic Ocean (GeoNames 3411923), car 4 sites sont au Groenland.",
            "- Couverture temporelle 2014 conservée, **non vérifiée** (absente du dépôt et du preprint).", "",
-           "## Mots-clés à ajouter à `dictionary.json` (metadonnees)", "", ", ".join(sorted(new_kw)) or "Aucun.", "",
+           "## Nouveaux mots-clés (absents des jeux de metadonnees : vérifier les quasi-doublons)", "", ", ".join(sorted(new_kw)) or "Aucun.", "",
            "## Constats sur la plateforme", "",
            "- Le chargeur VCF de data-explorer accepte l'extension `.vcf.gz` mais lit le fichier ligne par ligne en UTF-8 : un VCF compressé échouerait. Les VCF sont donc fournis non compressés.",
            "- metadata-api lit `dct:relation` et les clés `dct:*` des distributions, alors que le `@context` du DCAT builder ne déclare que `dcterms`. Le préfixe `dct` a été ajouté au `@context` (même IRI).",
