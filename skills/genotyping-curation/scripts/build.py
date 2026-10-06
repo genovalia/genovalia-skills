@@ -186,7 +186,8 @@ ATTR = {
 }
 UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "decimal degree": "deg", "meter": "m", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
         "um": "um", "nm": "nm", "kg/m3": "kg/m3", "GPa": "GPa", "ug/m": "ug/m", "m2/kg": "m2/kg", "1/mm2": "/mm2",
-        "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d"}
+        "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d",
+        "nanogram per gram": "ng/g", "microgram per gram": "ug/g"}  # tissue concentrations (angang5)
 
 
 def build_oca(name, description, columns, extra, entries=None, classification="RDF106"):
