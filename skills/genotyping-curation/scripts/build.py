@@ -258,14 +258,26 @@ def person(name, orcid=None, roles=("author",)):
     return {"name": name, "orcid": orcid, "roles": list(roles)}
 
 
+REPOSITORY_DOI = ("10.5061/", "10.5281/", "10.5683/", "10.20383/", "10.6084/", "10.17632/")  # Dryad, Zenodo, Dataverse, FRDR, figshare, Mendeley
+
+
+def relation_urls(relations):
+    """dct:relation: every publication and data deposit DOI of the recipe, except bioRxiv preprints
+    (10.1101/) when a published article is also listed."""
+    rel = list(relations or [])
+    published = any(not x.startswith(("10.1101/",) + REPOSITORY_DOI) for x in rel)
+    return [f"https://doi.org/{x}" for x in rel if not (published and x.startswith("10.1101/"))]
+
+
 def build_dcat(ds_id, m):
     """Same shape as the Genovalia DCAT builder (buildObj) and the metadonnees repo.
-    'dct' is added to @context because metadata-api reads dct:relation and dct:* keys
-    inside distributions (both prefixes expand to http://purl.org/dc/terms/).
-    License, distribution and dct:relation are left empty, as on every metadonnees dataset
-    (AGENTS.md "Deliberately left for later"): Sedna takes the access-request link from
-    dcat:distribution -> dcat:accessURL, so a repository URL there would replace Genovalia's
-    access form. m["license"], m["distributions"] and m["relations"] stay in the recipes as
+    'dct' is added to @context because metadata-api reads dct:relation (exposed as related_urls)
+    and dct:* keys inside distributions (both prefixes expand to http://purl.org/dc/terms/).
+    dct:relation lists the publication(s) and data deposit(s) from m["relations"] (see
+    relation_urls), as in metadonnees since 2026-10-07. License and distribution are left empty,
+    as on every metadonnees dataset (AGENTS.md "Deliberately left for later"): Sedna takes the
+    access-request link from dcat:distribution -> dcat:accessURL, so a repository URL there would
+    replace Genovalia's access form. m["license"] and m["distributions"] stay in the recipes as
     provenance for QC_REPORT/issues.json only."""
     orcid = lambda p: f"https://orcid.org/{p['orcid']}" if p.get("orcid") else None
     agent = lambda p: {k: v for k, v in {"@id": orcid(p), "@type": "prov:Person", "foaf:name": p["name"]}.items() if v}
@@ -299,6 +311,8 @@ def build_dcat(ds_id, m):
     c = m["people"][0]
     d["dcterms:creator"] = {k: v for k, v in {"@id": orcid(c), "@type": "foaf:Person", "foaf:name": c["name"]}.items() if v}
     d["dcat:qualifiedAttribution"] = [{"@type": "prov:Attribution", "prov:agent": agent(p), "dcat:hadRole": p["roles"]} for p in m["people"]]
+    rel = relation_urls(m.get("relations"))
+    if rel: d["dct:relation"] = rel
     return d
 
 
