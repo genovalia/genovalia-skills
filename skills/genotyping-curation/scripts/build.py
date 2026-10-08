@@ -194,7 +194,7 @@ ATTR = {
     "population": ("Text", "population", "Non-geographic group the individual belongs to, such as a breeding population", None),
     "population_type": ("Text", "population_type", "General category describing the origin or management status of the population", None),
     "population_status": ("Text", "population_status", "Biogeographic status of the sampled population, such as native or introduced.", None),
-    "ecotype": ("Text", "ecotype", "Ecotype of the individual, such as anadromous or freshwater resident", None),
+    "ecotype": ("Text", "ecotype", "Distinct population within a species that is adapted to specific environmental conditions, such as anadromous or freshwater resident", None),
     "breed": ("Text", "breed", "Breed of the individual (animals)", None),
     "variety": ("Text", "variety", "Variety, cultivar, breeding line or landrace of the individual (plants)", None),
     "strain": ("Text", "strain", "Laboratory or microbial strain of the individual", None),
