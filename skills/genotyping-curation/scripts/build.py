@@ -577,6 +577,7 @@ def process(ds_id, cfg, taken):
     res["dcat"] = build_dcat(ds_id, m)
     if set(st["chroms"]) == {UNMAPPED}:
         res.setdefault("decisions", []).append(f"Pas de positions génomiques : à l'écriture du VCF, tous les marqueurs ont ensuite été placés sur le pseudo-chromosome « {UNMAPPED} », POS = rang du marqueur (sans valeur génomique), l'ancien CHROM (nom du marqueur) dans ID ; un contig par marqueur rendait le chargement quadratique (angang2 : ~30 min au lieu de quelques secondes).")
+    df = df.apply(lambda c: c.map(lambda v: v.strip() if isinstance(v, str) else v))  # no leading/trailing spaces in values
     df = df.replace("", pd.NA)
     df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8", na_rep="NA")  # missing values written NA (requester convention)
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
