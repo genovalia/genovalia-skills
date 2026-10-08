@@ -177,8 +177,12 @@ ATTR = {
     "sample_tissue": ("Text", "sample_tissue", "The type of tissue sampled from the individual and used for DNA extraction", None),
     "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
     "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
-    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain genotypes, such as whole genome sequencing, genotyping-by-sequencing or SNP chip.", None),
+    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain the genotypes: genotyping-by-sequencing, SNP chip, whole genome sequencing, targeted sequencing, targeted SNP assay or RNA sequencing.", None),
 }
+# Controlled vocabulary of genotyping_technology (validated 2026-10-07), written as OCA entry codes. The exact
+# protocol or platform (ddRAD, DArTseq, Axiom 220K, KASP, GT-seq...) goes in the recipe's CFG `method`, which
+# process() copies into the QC_REPORT decisions.
+TECHNOLOGIES = ("genotyping-by-sequencing", "SNP chip", "whole genome sequencing", "targeted sequencing", "targeted SNP assay", "RNA sequencing")
 UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "decimal degree": "deg", "meter": "m", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
         "um": "um", "nm": "nm", "kg/m3": "kg/m3", "GPa": "GPa", "ug/m": "ug/m", "m2/kg": "m2/kg", "1/mm2": "/mm2",
         "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d",
@@ -503,6 +507,7 @@ def run_qc(ds_id, cfg, res, st):
 # entries, decisions, blocking, minor). Column meaning lives in `extra` (→ OCA). Helpers shared by the recipes:
 
 def _dna(df, tech):
+    assert tech in TECHNOLOGIES, f"genotyping_technology hors vocabulaire : {tech!r} (méthode exacte → CFG method)"
     df["sequenced_molecule"] = "DNA"
     df["genotyping_technology"] = tech
     return df
@@ -547,7 +552,17 @@ def process(ds_id, cfg, taken):
     if m["years"] == "samples":
         y = pd.to_numeric(df["sampling_year"], errors="coerce")
         m["years"] = (int(y.min()), int(y.max()))
-    res["oca"] = build_oca(cfg["oca_name"], m["description"], list(df.columns), res.get("extra", {}), res.get("entries"))
+    entries = dict(res.get("entries") or {})
+    if "genotyping_technology" in df.columns:
+        entries.setdefault("genotyping_technology", {t: t for t in TECHNOLOGIES})
+        techs = sorted(set(df["genotyping_technology"].dropna()))
+        bad = [t for t in techs if t not in TECHNOLOGIES]
+        if bad: res.setdefault("blocking", []).append(f"genotyping_technology hors vocabulaire : {bad}")
+        missing_kw = [t for t in techs if t not in cfg["keywords"]]
+        if missing_kw: res.setdefault("minor", []).append(f"technologie absente des mots-clés : {missing_kw}")
+        if cfg.get("method"):
+            res.setdefault("decisions", []).append(f"genotyping_technology = {' / '.join(techs)} (vocabulaire Genovalia) ; méthode exacte : {cfg['method']}.")
+    res["oca"] = build_oca(cfg["oca_name"], m["description"], list(df.columns), res.get("extra", {}), entries)
     res["dcat"] = build_dcat(ds_id, m)
     df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8")
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
