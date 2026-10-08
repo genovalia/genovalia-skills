@@ -111,8 +111,19 @@ v = VCF(sys.argv[1]); n = sum(1 for _ in v); print(len(v.samples), n)
                 samples=int(out[0]) if out else None, variants=int(out[1]) if out else None)
 
 
+UNMAPPED = "unmapped"
+
+
 def write_vcf(path, samples, rows, source):
-    """rows: iterable of (chrom, pos, id, ref, alt, [GT strings])."""
+    """rows: iterable of (chrom, pos, id, ref, alt, [GT strings]).
+    Markers without genomic positions (every POS = 1, CHROM = marker) go on one pseudo-chromosome UNMAPPED
+    with sequential POS 1..n, the marker name kept in ID: one contig per marker makes htslib/cyvcf2 (and the
+    data-explorer loader, which strips ##contig lines) quadratic (angang2: 445k contigs, ~30 min vs 4 s)."""
+    rows = list(rows)
+    if rows and all(int(r[1]) == 1 for r in rows) and len({r[0] for r in rows}) > 1:
+        rows = [(UNMAPPED, i, chrom if vid in ("", ".", chrom) else f"{chrom};{vid}", ref, alt, gts)
+                for i, (chrom, pos, vid, ref, alt, gts) in enumerate(rows, 1)]
+        source += f"; then, since there are no genomic positions, every marker moved to CHROM = {UNMAPPED}, POS = marker rank (no genomic meaning), the former CHROM (marker name) in ID"
     with open(path, "w") as f:
         f.write("##fileformat=VCFv4.2\n")
         f.write(f"##fileDate={TODAY.replace('-', '')}\n")
@@ -177,8 +188,12 @@ ATTR = {
     "sample_tissue": ("Text", "sample_tissue", "The type of tissue sampled from the individual and used for DNA extraction", None),
     "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
     "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
-    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain genotypes, such as whole genome sequencing, genotyping-by-sequencing or SNP chip.", None),
+    "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain the genotypes: genotyping-by-sequencing, SNP chip, whole genome sequencing, targeted sequencing, targeted SNP assay or RNA sequencing.", None),
 }
+# Controlled vocabulary of genotyping_technology (validated 2026-10-07), written as OCA entry codes. The exact
+# protocol or platform (ddRAD, DArTseq, Axiom 220K, KASP, GT-seq...) goes in the recipe's CFG `method`, which
+# process() copies into the QC_REPORT decisions.
+TECHNOLOGIES = ("genotyping-by-sequencing", "SNP chip", "whole genome sequencing", "targeted sequencing", "targeted SNP assay", "RNA sequencing")
 UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "decimal degree": "deg", "meter": "m", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
         "um": "um", "nm": "nm", "kg/m3": "kg/m3", "GPa": "GPa", "ug/m": "ug/m", "m2/kg": "m2/kg", "1/mm2": "/mm2",
         "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d",
@@ -503,6 +518,7 @@ def run_qc(ds_id, cfg, res, st):
 # entries, decisions, blocking, minor). Column meaning lives in `extra` (→ OCA). Helpers shared by the recipes:
 
 def _dna(df, tech):
+    assert tech in TECHNOLOGIES, f"genotyping_technology hors vocabulaire : {tech!r} (méthode exacte → CFG method)"
     df["sequenced_molecule"] = "DNA"
     df["genotyping_technology"] = tech
     return df
@@ -547,9 +563,22 @@ def process(ds_id, cfg, taken):
     if m["years"] == "samples":
         y = pd.to_numeric(df["sampling_year"], errors="coerce")
         m["years"] = (int(y.min()), int(y.max()))
-    res["oca"] = build_oca(cfg["oca_name"], m["description"], list(df.columns), res.get("extra", {}), res.get("entries"))
+    entries = dict(res.get("entries") or {})
+    if "genotyping_technology" in df.columns:
+        entries.setdefault("genotyping_technology", {t: t for t in TECHNOLOGIES})
+        techs = sorted(set(df["genotyping_technology"].dropna()))
+        bad = [t for t in techs if t not in TECHNOLOGIES]
+        if bad: res.setdefault("blocking", []).append(f"genotyping_technology hors vocabulaire : {bad}")
+        missing_kw = [t for t in techs if t not in cfg["keywords"]]
+        if missing_kw: res.setdefault("minor", []).append(f"technologie absente des mots-clés : {missing_kw}")
+        if cfg.get("method"):
+            res.setdefault("decisions", []).append(f"genotyping_technology = {' / '.join(techs)} (vocabulaire Genovalia) ; méthode exacte : {cfg['method']}.")
+    res["oca"] = build_oca(cfg["oca_name"], m["description"], list(df.columns), res.get("extra", {}), entries)
     res["dcat"] = build_dcat(ds_id, m)
-    df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8")
+    if set(st["chroms"]) == {UNMAPPED}:
+        res.setdefault("decisions", []).append(f"Pas de positions génomiques : à l'écriture du VCF, tous les marqueurs ont ensuite été placés sur le pseudo-chromosome « {UNMAPPED} », POS = rang du marqueur (sans valeur génomique), l'ancien CHROM (nom du marqueur) dans ID ; un contig par marqueur rendait le chargement quadratique (angang2 : ~30 min au lieu de quelques secondes).")
+    df = df.replace("", pd.NA)
+    df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8", na_rep="NA")  # missing values written NA (requester convention)
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
     (out / "dcat.json").write_text(json.dumps(res["dcat"], indent=2, ensure_ascii=False) + "\n")
     (out / "mapper.json").write_text(json.dumps(build_mapper(ds_id, m), indent=2, ensure_ascii=False) + "\n")
