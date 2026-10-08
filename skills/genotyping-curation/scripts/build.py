@@ -111,8 +111,19 @@ v = VCF(sys.argv[1]); n = sum(1 for _ in v); print(len(v.samples), n)
                 samples=int(out[0]) if out else None, variants=int(out[1]) if out else None)
 
 
+UNMAPPED = "unmapped"
+
+
 def write_vcf(path, samples, rows, source):
-    """rows: iterable of (chrom, pos, id, ref, alt, [GT strings])."""
+    """rows: iterable of (chrom, pos, id, ref, alt, [GT strings]).
+    Markers without genomic positions (every POS = 1, CHROM = marker) go on one pseudo-chromosome UNMAPPED
+    with sequential POS 1..n, the marker name kept in ID: one contig per marker makes htslib/cyvcf2 (and the
+    data-explorer loader, which strips ##contig lines) quadratic (angang2: 445k contigs, ~30 min vs 4 s)."""
+    rows = list(rows)
+    if rows and all(int(r[1]) == 1 for r in rows) and len({r[0] for r in rows}) > 1:
+        rows = [(UNMAPPED, i, chrom if vid in ("", ".", chrom) else f"{chrom};{vid}", ref, alt, gts)
+                for i, (chrom, pos, vid, ref, alt, gts) in enumerate(rows, 1)]
+        source += f"; then, since there are no genomic positions, every marker moved to CHROM = {UNMAPPED}, POS = marker rank (no genomic meaning), the former CHROM (marker name) in ID"
     with open(path, "w") as f:
         f.write("##fileformat=VCFv4.2\n")
         f.write(f"##fileDate={TODAY.replace('-', '')}\n")
@@ -564,7 +575,10 @@ def process(ds_id, cfg, taken):
             res.setdefault("decisions", []).append(f"genotyping_technology = {' / '.join(techs)} (vocabulaire Genovalia) ; méthode exacte : {cfg['method']}.")
     res["oca"] = build_oca(cfg["oca_name"], m["description"], list(df.columns), res.get("extra", {}), entries)
     res["dcat"] = build_dcat(ds_id, m)
-    df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8")
+    if set(st["chroms"]) == {UNMAPPED}:
+        res.setdefault("decisions", []).append(f"Pas de positions génomiques : à l'écriture du VCF, tous les marqueurs ont ensuite été placés sur le pseudo-chromosome « {UNMAPPED} », POS = rang du marqueur (sans valeur génomique), l'ancien CHROM (nom du marqueur) dans ID ; un contig par marqueur rendait le chargement quadratique (angang2 : ~30 min au lieu de quelques secondes).")
+    df = df.replace("", pd.NA)
+    df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8", na_rep="NA")  # missing values written NA (requester convention)
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
     (out / "dcat.json").write_text(json.dumps(res["dcat"], indent=2, ensure_ascii=False) + "\n")
     (out / "mapper.json").write_text(json.dumps(build_mapper(ds_id, m), indent=2, ensure_ascii=False) + "\n")

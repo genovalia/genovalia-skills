@@ -51,6 +51,8 @@ Per-dataset output (flat, no sub-folders except `raw/`):
 - Matrix conversions: prove the genotype coding against an independent source (a VCF subset, the README) before trusting it; state REF choice in `##source`.
 - A header with one column fewer than the rows shifts pandas columns: check which column really holds the VCF ID (ID match must be 100 %).
 - PDF tables via pypdf split negative numbers and long words across lines: normalise (`\n-\n` → ` -`), then assert the expected row count.
+- Markers without genomic positions: never one contig per marker (CHROM = marker, POS = 1). htslib/cyvcf2, and the data-explorer loader, which strips `##contig` lines, add each undeclared contig to the header one by one, so loading becomes quadratic (angang2, 445k markers: ~30 min instead of 4 s). `h.write_vcf` moves such rows to the pseudo-chromosome `unmapped` with POS = marker rank and the marker name in ID, and says so in `##source` and the decisions. A provided VCF with this layout must be rewritten the same way, not linked.
+- Missing values in `<id>_samples.csv` are written `NA` (requester convention; `build.py` writes them so). Missing genotypes in the VCF stay `./.`.
 - Duplicate CHROM:POS is **blocking**: the loader keys variants on (CHROM, POS) and silently drops the 2nd marker's genotypes.
 - Rejected-SNP pseudo-chromosomes, spreadsheet-damaged VCF headers, split per-country VCFs: repair/merge in `prepare_`, and say so.
 - Never join attribute tables by row order when no ID links them: report as blocking, ask the authors.
