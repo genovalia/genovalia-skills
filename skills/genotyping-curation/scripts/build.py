@@ -181,11 +181,33 @@ ATTR = {
     "latitude": ("Numeric", "latitude", "Latitude in decimal degree. Ex: -42.23452", "decimal degree"),
     "longitude": ("Numeric", "longitude", "Longitude in decimal degree. Ex: -42.23452", "decimal degree"),
     "elevation": ("Numeric", "elevation", "Elevation at the sites where individuals were collected (in meters)", "meter"),
-    "site_code": ("Text", "site_code", "Code of the sampling site as used in the source publication", None),
+    "sampling_location": ("Text", "sampling_location", "Name of the location where the individual was sampled (site, locality, river or lake)", None),
     "site_type": ("Text", "site_type", "General environmental or habitat category of the sampling site", None),
-    "region": ("Text", "region", "Geographic region of the sampling site", None),
+    "region": ("Text", "region", "Regional grouping of the sampling sites used in the source study, such as a management, biogeographic or genetic region", None),
     "sampling_year": ("Numeric", "sampling_year", "Year in which the sample was collected", None),
-    "sample_tissue": ("Text", "sample_tissue", "The type of tissue sampled from the individual and used for DNA extraction", None),
+    "sampling_date": ("DateTime", "sampling_date", "Date on which the sample was collected, in the ISO 8601 format YYYY-MM-DD, or YYYY-MM when the day is unknown", None),
+    "sampling_season": ("Text", "sampling_season", "Season in which the sample was collected: spring, summer, fall or winter", None),
+    "sex": ("Text", "sex", "Sex of the individual: female, male or unknown", None),
+    "life_stage": ("Text", "life_stage", "Life stage of the sampled individual, such as egg, larva, juvenile or adult", None),
+    "age": ("Numeric", "age", "Age of the individual", "year"),
+    "sample_tissue": ("Text", "sample_tissue", "The type of tissue sampled from the individual and used for DNA or RNA extraction", None),
+    "population": ("Text", "population", "Non-geographic group the individual belongs to, such as a breeding population", None),
+    "population_type": ("Text", "population_type", "General category describing the origin or management status of the population", None),
+    "population_status": ("Text", "population_status", "Biogeographic status of the sampled population, such as native or introduced.", None),
+    "ecotype": ("Text", "ecotype", "Ecotype of the individual, such as anadromous or freshwater resident", None),
+    "breed": ("Text", "breed", "Breed of the individual (animals)", None),
+    "variety": ("Text", "variety", "Variety, cultivar, breeding line or landrace of the individual (plants)", None),
+    "strain": ("Text", "strain", "Laboratory or microbial strain of the individual", None),
+    "pedigree": ("Text", "pedigree", "Ancestry of the individual: breeding pedigree (cross formula), breeding line or reference to its registration", None),
+    "family": ("Text", "family", "Family (progeny) the individual belongs to", None),
+    "mother": ("Text", "mother", "ID of the mother", None),
+    "father": ("Text", "father", "ID of the father", None),
+    "block": ("Numeric", "block", "Block (replication) of the field or progeny test where the individual grows", None),
+    "tree_number": ("Numeric", "tree_number", "Tree number within the family and block", None),
+    "body_length": ("Numeric", "body_length", "Body length of the individual", "millimeter"),
+    "body_mass": ("Numeric", "body_mass", "Body mass of the individual", "gram"),
+    "technical_replicate": ("Boolean", "technical_replicate", "TRUE if this sample is a technical replicate of another sample of the dataset", None),
+    "possible_duplicate_of": ("Text", "possible_duplicate_of", "ID of another sample with nearly identical genotypes (likely the same individual)", None),
     "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
     "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
     "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain the genotypes: genotyping-by-sequencing, SNP chip, whole genome sequencing, targeted sequencing, targeted SNP assay or RNA sequencing.", None),
@@ -194,17 +216,46 @@ ATTR = {
 # protocol or platform (ddRAD, DArTseq, Axiom 220K, KASP, GT-seq...) goes in the recipe's CFG `method`, which
 # process() copies into the QC_REPORT decisions.
 TECHNOLOGIES = ("genotyping-by-sequencing", "SNP chip", "whole genome sequencing", "targeted sequencing", "targeted SNP assay", "RNA sequencing")
+# Controlled codes of other vocabulary attributes (2026-10-08), written as OCA entry codes when the column is present.
+VOCAB_CODES = {"population_type": ("wild", "hatchery", "domesticated"), "population_status": ("native", "introduced"),
+               "sampling_season": ("spring", "summer", "fall", "winter"), "sex": ("female", "male", "unknown")}
+# Unit labels are written in full words (decision 2026-10-01); recipes may give a symbol, build_oca normalises it.
+UNIT_WORDS = {"cm": "centimeter", "mm": "millimeter", "m": "meter", "km": "kilometer", "um": "micrometer", "nm": "nanometer",
+              "g": "gram", "kg": "kilogram", "ha": "hectare", "m3": "cubic meter", "a": "year", "deg": "degree", "%": "percent",
+              "kg/m3": "kilogram per cubic meter", "g/cm3": "gram per cubic centimeter", "km/s": "kilometer per second", "m/s": "meter per second",
+              "GPa": "gigapascal", "ug/m": "microgram per meter", "m2/kg": "square meter per kilogram", "1/mm2": "per square millimeter",
+              "MJ/m2": "megajoule per square meter", "mg/m3": "milligram per cubic meter", "ppm": "parts per million"}
+# Full names of the pollutant codes used in column names (angang5, angros3): definitions spell them out.
+CHEMICALS = {
+    "ag": "silver (Ag)", "as": "arsenic (As)", "cd": "cadmium (Cd)", "cr": "chromium (Cr)", "cu": "copper (Cu)", "hg": "mercury (Hg)",
+    "ni": "nickel (Ni)", "pb": "lead (Pb)", "se": "selenium (Se)", "zn": "zinc (Zn)",
+    "2_4_ddd_cb154_77": "2,4'-dichlorodiphenyldichloroethane (2,4'-DDD; reported together with the polychlorinated biphenyls PCB 154 and PCB 77)",
+    "2_4_dde": "2,4'-dichlorodiphenyldichloroethylene (2,4'-DDE)", "2_4_ddt": "2,4'-dichlorodiphenyltrichloroethane (2,4'-DDT)",
+    "4_4_ddd": "4,4'-dichlorodiphenyldichloroethane (4,4'-DDD)", "4_4_dde": "4,4'-dichlorodiphenyldichloroethylene (4,4'-DDE)",
+    "4_4_ddt": "4,4'-dichlorodiphenyltrichloroethane (4,4'-DDT)", "hcb": "hexachlorobenzene (HCB)", "lindane": "lindane (gamma-hexachlorocyclohexane)",
+    "pcb_50_28": "the polychlorinated biphenyls PCB 50 and PCB 28 (reported together)",
+}
+CHEMICALS.update({f"pbde_{n}": f"the polybrominated diphenyl ether BDE-{n} (PBDE {n})" for n in (28, 47, 49, 99, 100, 153, 154, 183, 209)})
+CHEMICALS.update({f"pcb_{n}": f"the polychlorinated biphenyl PCB {n}" for n in (52, 101, 118, 138, 153, 180)})
+
 UCUM = {"km": "km", "g": "g", "kg": "kg", "degree": "deg", "decimal degree": "deg", "meter": "m", "degree Celsius": "Cel", "mg/m3": "mg/m3", "m": "m", "ha": "har", "cm": "cm", "mm": "mm",
         "um": "um", "nm": "nm", "kg/m3": "kg/m3", "GPa": "GPa", "ug/m": "ug/m", "m2/kg": "m2/kg", "1/mm2": "/mm2",
         "ppm": "[ppm]", "%": "%", "MJ/m2": "MJ/m2", "degree-day": "d",
-        "nanogram per gram": "ng/g", "microgram per gram": "ug/g"}  # tissue concentrations (angang5)
+        "nanogram per gram": "ng/g", "microgram per gram": "ug/g",
+        "centimeter": "cm", "millimeter": "mm", "kilometer": "km", "micrometer": "um", "nanometer": "nm", "gram": "g", "kilogram": "kg",
+        "hectare": "har", "cubic meter": "m3", "year": "a", "percent": "%", "kilogram per cubic meter": "kg/m3",
+        "gram per cubic centimeter": "g/cm3", "kilometer per second": "km/s", "meter per second": "m/s", "gigapascal": "GPa",
+        "microgram per meter": "ug/m", "square meter per kilogram": "m2/kg", "per square millimeter": "/mm2",
+        "megajoule per square meter": "MJ/m2", "milligram per cubic meter": "mg/m3", "parts per million": "[ppm]", "square meter": "m2"}  # tissue concentrations (angang5)
 
 
 def build_oca(name, description, columns, extra, entries=None, classification="RDF106"):
     """columns: ordered CSV columns; extra: {attr: (type, label, info, unit)} for dataset-specific
     attributes; entries: {attr: {code: label}} for categorical attributes.
     Mirrors the Semantic Engine oca_package/1.0 layout (key order included) so SAIDs verify."""
-    spec = {c: (extra.get(c) or ATTR[c]) for c in columns}
+    # vocabulary attributes always take their ATTR definition (a recipe never redefines them); units in full words
+    spec = {c: (ATTR[c] if c in ATTR else extra[c]) for c in columns}
+    spec = {c: (t, l, i, UNIT_WORDS.get(u, u) if u else u) for c, (t, l, i, u) in spec.items()}
     entries = entries or {}
     attrs = sorted(spec)
     cb = {"d": "", "type": "spec/capture_base/1.1",
@@ -451,7 +502,8 @@ def run_qc(ds_id, cfg, res, st):
         geo = "OK" if not no_coord and not out else f"{no_coord} manquantes, {out} hors zone"
         if no_coord: minor.append(f"{no_coord} individus sans coordonnées")
         if out: blocking.append(f"{out} individus avec coordonnées hors de la zone attendue {cfg['bbox']}")
-    sites = df["site_code"].nunique() if "site_code" in df else None
+    site_col = next((c for c in ("site_code", "sampling_location") if c in df), None)
+    sites = df[site_col].nunique() if site_col else (df[["latitude", "longitude"]].drop_duplicates().dropna().shape[0] if {"latitude", "longitude"} <= set(df.columns) else None)
     if exp.get("sites") and sites is not None and sites != exp["sites"]:
         minor.append(f"{sites} sites dans les données vs {exp['sites']} annoncés ({exp['src']})")
     empty = [c for c in df.columns if df[c].isna().all()]
@@ -553,6 +605,44 @@ for _f in sorted((ROOT / "prep").glob("[a-z]*.py")):
         print(f"prep/{_f.name} ignoré : {type(e).__name__}: {e}", file=sys.stderr)
 
 
+def apply_attributes(ds_id, cfg, df, res):
+    """Recipe CFG `attributes` (vocabulary review of 2026-10-08): {"drop": [...], "rename": {old: new}, "values": {col: {old: new}},
+    "scale": {col: factor}, "types": {col: OCA type}, "info": {col: definition}, "units": {col: unit}}. Keys of values/scale/types/info/units
+    use the FINAL column name. Renamed columns move their `extra` entry; vocabulary names (ATTR) use the ATTR definition."""
+    spec = cfg.get("attributes") or {}
+    extra = dict(res.get("extra", {})); entries = dict(res.get("entries") or {})
+    df = df.apply(lambda c: c.map(lambda v: v.strip() if isinstance(v, str) else v))
+    SEX = {"f": "female", "female": "female", "m": "male", "male": "male", "u": "unknown", "unknown": "unknown", "?": "unknown"}
+    drop = [c for c in spec.get("drop", []) if c in df.columns]
+    df = df.drop(columns=drop)
+    for c in drop: extra.pop(c, None); entries.pop(c, None)
+    ren = {a: b for a, b in spec.get("rename", {}).items() if a in df.columns}
+    df = df.rename(columns=ren)
+    for a, b in ren.items():
+        if a in extra: extra[b] = extra.pop(a)
+        if a in entries: entries[b] = entries.pop(a)
+    for c, m in spec.get("values", {}).items():
+        df[c] = df[c].map(lambda v: m.get(str(v), v) if v is not None and v == v else v)
+        if c in entries: entries[c] = {m.get(k, k): v for k, v in entries[c].items() if m.get(k, k) is not None}
+    if "sex" in df.columns:  # sex codes of the vocabulary: female, male, unknown
+        df["sex"] = df["sex"].map(lambda v: SEX.get(v.lower(), v) if isinstance(v, str) else v)
+    for c, f in spec.get("scale", {}).items():
+        df[c] = pd.to_numeric(df[c], errors="coerce") * f
+    for c in df.columns:
+        if c in ATTR: extra.pop(c, None)
+    for key, pos in (("types", 0), ("info", 2), ("units", 3)):
+        for c, v in spec.get(key, {}).items():
+            t = list(extra.get(c, ATTR.get(c))); t[pos] = v; extra[c] = tuple(t)
+    if drop or ren:
+        res.setdefault("decisions", []).append(
+            "Attributs harmonisés (revue du vocabulaire du 2026-10-08) : "
+            + (f"retirés : {', '.join(drop)}" if drop else "")
+            + (" ; " if drop and ren else "") + (f"renommés : {', '.join(f'{a} → {b}' for a, b in ren.items())}" if ren else "")
+            + (f" ; conversions d'unité : {', '.join(f'{c} ×{f}' for c, f in spec['scale'].items())}" if spec.get("scale") else "") + ".")
+    res = dict(res, extra=extra, entries=entries, samples=df)
+    return df, res
+
+
 def process(ds_id, cfg, taken):
     out = ROOT / ds_id
     res = globals()[f"prepare_{ds_id}"](out / "raw", out)
@@ -563,7 +653,13 @@ def process(ds_id, cfg, taken):
     if m["years"] == "samples":
         y = pd.to_numeric(df["sampling_year"], errors="coerce")
         m["years"] = (int(y.min()), int(y.max()))
+    df, res = apply_attributes(ds_id, cfg, df, res)
     entries = dict(res.get("entries") or {})
+    for a, codes in VOCAB_CODES.items():
+        if a in df.columns:
+            entries[a] = {c: c for c in codes}
+            bad = sorted(set(df[a].dropna().astype(str)) - set(codes) - {"NA"})
+            if bad: res.setdefault("blocking", []).append(f"{a} hors codes du vocabulaire : {bad}")
     if "genotyping_technology" in df.columns:
         entries.setdefault("genotyping_technology", {t: t for t in TECHNOLOGIES})
         techs = sorted(set(df["genotyping_technology"].dropna()))
