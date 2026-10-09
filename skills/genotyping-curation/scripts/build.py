@@ -758,6 +758,9 @@ def process(ds_id, cfg, taken):
         res.setdefault("decisions", []).append(f"Pas de positions génomiques : à l'écriture du VCF, tous les marqueurs ont ensuite été placés sur le pseudo-chromosome « {UNMAPPED} », POS = rang du marqueur (sans valeur génomique), l'ancien CHROM (nom du marqueur) dans ID ; un contig par marqueur rendait le chargement quadratique (angang2 : ~30 min au lieu de quelques secondes).")
     df = df.apply(lambda c: c.map(lambda v: v.strip() if isinstance(v, str) else v))  # no leading/trailing spaces in values
     df = df.replace("", pd.NA)
+    for c in df.columns:  # an integer column with missing values becomes float in pandas: write 2001, not 2001.0
+        if pd.api.types.is_float_dtype(df[c]) and df[c].notna().any() and (df[c].dropna() % 1 == 0).all():
+            df[c] = df[c].astype("Int64")
     df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8", na_rep="NA")  # missing values written NA (requester convention)
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
     (out / "dcat.json").write_text(json.dumps(res["dcat"], indent=2, ensure_ascii=False) + "\n")
