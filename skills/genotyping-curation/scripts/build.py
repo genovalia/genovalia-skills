@@ -134,35 +134,83 @@ def write_vcf(path, samples, rows, source):
             f.write(f"{chrom}\t{pos}\t{vid}\t{ref}\t{alt}\t.\t.\t.\tGT\t" + "\t".join(gts) + "\n")
 
 
-def unmap_duplicate_positions(path):
-    """Distinct markers sharing a CHROM:POS lose genotypes in the loader (it keys variants on CHROM, POS): every marker after
-    the first at a position moves to CHROM = UNMAPPED with the next free rank. Rewrites the file (a hard link to raw/ is replaced,
-    the raw file is untouched). Returns the number of markers moved."""
-    seen, dup, last_unmapped = set(), 0, 0
+CONCORDANCE_MIN = 0.95
+
+
+def _bases(ref, alt, gt):
+    """Unordered pair of allele bases of a GT, or None when missing."""
+    al = [ref] + alt.split(",")
+    a = re.split(r"[/|]", gt.split(":", 1)[0])
+    if len(a) != 2 or "." in a or not all(x.isdigit() and int(x) < len(al) for x in a): return None
+    return tuple(sorted((al[int(a[0])], al[int(a[1])])))
+
+
+_COMP = str.maketrans("ACGT", "TGCA")
+
+
+def _concordance(x, y):
+    """Share of individuals with the same genotype in two markers, reading the second on either strand
+    (Illumina fwd/rev probes of one SNP report complementary bases, e.g. A/G vs T/C)."""
+    both = [(a, b) for a, b in zip(x, y) if a and b]
+    if not both: return 0.0
+    same = sum(a == b for a, b in both)
+    comp = sum(a == tuple(sorted(c.translate(_COMP) for c in b)) for a, b in both)
+    return max(same, comp) / len(both)
+
+
+def resolve_duplicate_positions(path):
+    """Markers sharing a CHROM:POS (the loader keeps one per position). Rule of 2026-10-08: if their genotypes agree
+    (>= CONCORDANCE_MIN of individuals called by both, compared as allele bases), the marker with the fewest missing genotypes
+    keeps the position and the others move to CHROM = UNMAPPED (next rank, ID kept); if they disagree, nobody can tell which one
+    is placed correctly, so every marker of that position is removed. A provided VCF is rewritten; raw/ is untouched.
+    Returns (moved, removed, n_positions)."""
+    count = Counter()
+    with _open_text(path) as f:
+        for line in f:
+            if line[0] != "#":
+                c, pos = line.split("\t", 2)[:2]
+                if c != UNMAPPED: count[(c, pos)] += 1
+    dup_pos = {k for k, n in count.items() if n > 1}
+    if not dup_pos or str(path).endswith(".gz"): return 0, 0, 0
+    groups = {k: [] for k in dup_pos}
+    last_unmapped = 0
     with _open_text(path) as f:
         for line in f:
             if line[0] == "#": continue
-            c, pos = line.split("\t", 2)[:2]
-            if c == UNMAPPED: last_unmapped = max(last_unmapped, int(pos)); continue
-            if (c, pos) in seen: dup += 1
-            seen.add((c, pos))
-    if not dup or str(path).endswith(".gz"): return 0
-    seen, moved = set(), []
-    tmp = Path(str(path) + ".tmp")
+            fld = line.rstrip("\n").split("\t")
+            if fld[0] == UNMAPPED: last_unmapped = max(last_unmapped, int(fld[1]))
+            elif (fld[0], fld[1]) in groups: groups[(fld[0], fld[1])].append(fld)
+    keep, unmap, drop = {}, [], set()
+    for k, rows in groups.items():
+        calls = [[_bases(r[3], r[4], g) for g in r[9:]] for r in rows]
+        best = min(range(len(rows)), key=lambda i: sum(x is None for x in calls[i]))
+        ok = True
+        for i in range(len(rows)):
+            if i == best: continue
+            if _concordance(calls[best], calls[i]) < CONCORDANCE_MIN: ok = False
+        if ok:
+            keep[k] = rows[best][2]; unmap += [r for i, r in enumerate(rows) if i != best]
+        else:
+            drop.add(k)
+    tmp = Path(str(path) + ".tmp"); written = set()
     with _open_text(path) as f, open(tmp, "w") as o:
         for line in f:
             if line[0] == "#":
                 if line.startswith("#CHROM"):
-                    o.write(f'##source_adjustment="{dup} markers sharing the CHROM:POS of a previous marker moved to CHROM={UNMAPPED}, POS = next rank, ID kept"\n')
+                    o.write(f'##source_adjustment="markers sharing a CHROM:POS: {len(unmap)} concordant duplicates moved to CHROM={UNMAPPED} (the one with fewest missing genotypes keeps the position); '
+                            f'{sum(len(groups[k]) for k in drop)} markers at {len(drop)} positions with discordant genotypes removed"\n')
                 o.write(line); continue
-            fld = line.split("\t", 2)
-            if fld[0] != UNMAPPED and (fld[0], fld[1]) in seen:
-                moved.append(fld[2]); continue
-            seen.add((fld[0], fld[1])); o.write(line)
-        for i, rest in enumerate(moved, last_unmapped + 1):
-            o.write(f"{UNMAPPED}\t{i}\t{rest}")
+            fld = line.split("\t", 3)
+            k = (fld[0], fld[1])
+            if k in drop: continue
+            if k in keep:
+                if fld[2] != keep[k] or k in written: continue
+                written.add(k)
+            o.write(line)
+        for i, r in enumerate(unmap, last_unmapped + 1):
+            o.write("\t".join([UNMAPPED, str(i)] + r[2:]) + "\n")
     os.replace(tmp, path)
-    return len(moved)
+    return len(unmap), sum(len(groups[k]) for k in drop), len(dup_pos)
 
 
 def link(src, dest):
@@ -678,9 +726,9 @@ def process(ds_id, cfg, taken):
     out = ROOT / ds_id
     res = globals()[f"prepare_{ds_id}"](out / "raw", out)
     df = res["samples"].copy()
-    moved = unmap_duplicate_positions(res["vcf"])
-    if moved:
-        res.setdefault("decisions", []).append(f"{moved} marqueurs distincts à la même position CHROM:POS qu'un marqueur précédent : déplacés sur le pseudo-chromosome « {UNMAPPED} » (rang suivant, ID conservé), car le chargeur ne garde qu'un marqueur par position.")
+    moved, removed, npos = resolve_duplicate_positions(res["vcf"])
+    if npos:
+        res.setdefault("decisions", []).append(f"{npos} positions CHROM:POS partagées par plusieurs marqueurs (le chargeur n'en garde qu'un par position) : {moved} doublons concordants (≥ {CONCORDANCE_MIN:.0%} de génotypes identiques) déplacés sur « {UNMAPPED} », le marqueur le moins manquant gardant la position ; {removed} marqueurs à génotypes discordants retirés, faute de savoir lequel est bien positionné.")
     st = vcf_stats(res["vcf"])
     fill = dict(n=f"{len(st['samples']):,}".replace(",", " "), snps=f"{st['n_snps']:,}".replace(",", " "))
     m = dict(cfg, title=cfg["title"], description=cfg["description"].format(**fill), description_fr=cfg["description_fr"].format(**fill))
