@@ -134,6 +134,37 @@ def write_vcf(path, samples, rows, source):
             f.write(f"{chrom}\t{pos}\t{vid}\t{ref}\t{alt}\t.\t.\t.\tGT\t" + "\t".join(gts) + "\n")
 
 
+def unmap_duplicate_positions(path):
+    """Distinct markers sharing a CHROM:POS lose genotypes in the loader (it keys variants on CHROM, POS): every marker after
+    the first at a position moves to CHROM = UNMAPPED with the next free rank. Rewrites the file (a hard link to raw/ is replaced,
+    the raw file is untouched). Returns the number of markers moved."""
+    seen, dup, last_unmapped = set(), 0, 0
+    with _open_text(path) as f:
+        for line in f:
+            if line[0] == "#": continue
+            c, pos = line.split("\t", 2)[:2]
+            if c == UNMAPPED: last_unmapped = max(last_unmapped, int(pos)); continue
+            if (c, pos) in seen: dup += 1
+            seen.add((c, pos))
+    if not dup or str(path).endswith(".gz"): return 0
+    seen, moved = set(), []
+    tmp = Path(str(path) + ".tmp")
+    with _open_text(path) as f, open(tmp, "w") as o:
+        for line in f:
+            if line[0] == "#":
+                if line.startswith("#CHROM"):
+                    o.write(f'##source_adjustment="{dup} markers sharing the CHROM:POS of a previous marker moved to CHROM={UNMAPPED}, POS = next rank, ID kept"\n')
+                o.write(line); continue
+            fld = line.split("\t", 2)
+            if fld[0] != UNMAPPED and (fld[0], fld[1]) in seen:
+                moved.append(fld[2]); continue
+            seen.add((fld[0], fld[1])); o.write(line)
+        for i, rest in enumerate(moved, last_unmapped + 1):
+            o.write(f"{UNMAPPED}\t{i}\t{rest}")
+    os.replace(tmp, path)
+    return len(moved)
+
+
 def link(src, dest):
     """Expose a raw VCF at the dataset root without copying it."""
     dest = Path(dest)
@@ -647,6 +678,9 @@ def process(ds_id, cfg, taken):
     out = ROOT / ds_id
     res = globals()[f"prepare_{ds_id}"](out / "raw", out)
     df = res["samples"].copy()
+    moved = unmap_duplicate_positions(res["vcf"])
+    if moved:
+        res.setdefault("decisions", []).append(f"{moved} marqueurs distincts à la même position CHROM:POS qu'un marqueur précédent : déplacés sur le pseudo-chromosome « {UNMAPPED} » (rang suivant, ID conservé), car le chargeur ne garde qu'un marqueur par position.")
     st = vcf_stats(res["vcf"])
     fill = dict(n=f"{len(st['samples']):,}".replace(",", " "), snps=f"{st['n_snps']:,}".replace(",", " "))
     m = dict(cfg, title=cfg["title"], description=cfg["description"].format(**fill), description_fr=cfg["description_fr"].format(**fill))
