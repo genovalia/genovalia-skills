@@ -287,6 +287,7 @@ ATTR = {
     "body_mass": ("Numeric", "body_mass", "Body mass of the individual", "gram"),
     "technical_replicate": ("Boolean", "technical_replicate", "TRUE if this sample is a technical replicate of another sample of the dataset", None),
     "possible_duplicate_of": ("Text", "possible_duplicate_of", "ID of another sample with nearly identical genotypes (likely the same individual)", None),
+    "biosample_accession": ("Text", "biosample_accession", "Accession number of the sequenced sample in the BioSample database of NCBI (shared with EBI and DDBJ), which links to its public raw sequence data", None),
     "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
     "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
     "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain the genotypes: genotyping-by-sequencing, SNP chip, whole genome sequencing, targeted sequencing, targeted SNP assay or RNA sequencing.", None),
