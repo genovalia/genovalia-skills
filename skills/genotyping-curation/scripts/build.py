@@ -710,7 +710,7 @@ def apply_attributes(ds_id, cfg, df, res):
     if "sex" in df.columns:  # sex codes of the vocabulary: female, male, unknown
         df["sex"] = df["sex"].map(lambda v: SEX.get(v.lower(), v) if isinstance(v, str) else v)
     for c, f in spec.get("scale", {}).items():
-        df[c] = pd.to_numeric(df[c], errors="coerce") * f
+        df[c] = (pd.to_numeric(df[c], errors="coerce") * f).round(6)  # no float residue (64.5 kg x 1000 = 64500.00000000001)
     for c in df.columns:
         if c in ATTR: extra.pop(c, None)
     for key, pos in (("types", 0), ("info", 2), ("units", 3)):
