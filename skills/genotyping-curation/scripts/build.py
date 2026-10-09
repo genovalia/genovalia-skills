@@ -699,7 +699,10 @@ def apply_attributes(ds_id, cfg, df, res):
     ren = {a: b for a, b in spec.get("rename", {}).items() if a in df.columns}
     df = df.rename(columns=ren)
     for a, b in ren.items():
-        if a in extra: extra[b] = extra.pop(a)
+        if a in extra:
+            t = list(extra.pop(a))
+            if t[1] == a: t[1] = b  # the label follows the new name
+            extra[b] = tuple(t)
         if a in entries: entries[b] = entries.pop(a)
     for c, m in spec.get("values", {}).items():
         df[c] = df[c].map(lambda v: m.get(str(v), v) if v is not None and v == v else v)
