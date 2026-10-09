@@ -483,6 +483,30 @@ def build_mapper(ds_id, m):
             "fr": {"title": lit(m["title_fr"]), "description": lit(m["description_fr"]), **common("fr")}}
 
 
+KEYWORDS_FR_FILE = ROOT / "keywords_fr.json"  # English keyword -> French, validated by the requester (2026-10-09)
+
+
+def bilingual_dcat(dcat, title_fr, description_fr, spatial_en, spatial_fr, keywords_fr=None):
+    """One DCAT with both languages as JSON-LD language-tagged literals (DCAT-AP style), for when metadata-api
+    can read it (today it reads English from dcat.json and French from mapper.json). Title, description and
+    keywords get an "en" and a "fr" literal; dcterms:spatial becomes a dcterms:Location (same GeoNames @id)
+    with a bilingual rdfs:label. Returns (dcat, English keywords missing from the dictionary)."""
+    if keywords_fr is None:
+        keywords_fr = json.loads(KEYWORDS_FR_FILE.read_text(encoding="utf-8")) if KEYWORDS_FR_FILE.exists() else {}
+    lit = lambda en, fr: [{"@value": en, "@language": "en"}, {"@value": fr, "@language": "fr"}]
+    d = json.loads(json.dumps(dcat))  # deep copy, key order kept
+    d["dcterms:language"] = ["en", "fr"]
+    d["dcterms:title"] = lit(dcat["dcterms:title"], title_fr)
+    d["dcterms:description"] = lit(dcat["dcterms:description"], description_fr)
+    en = dcat.get("dcat:keyword", [])
+    missing = [k for k in en if k not in keywords_fr]
+    d["dcat:keyword"] = [{"@value": k, "@language": "en"} for k in en] + [{"@value": keywords_fr[k], "@language": "fr"} for k in en if k in keywords_fr]
+    sp = dcat.get("dcterms:spatial")
+    if isinstance(sp, str):
+        d["dcterms:spatial"] = {"@id": sp, "@type": "dcterms:Location", "rdfs:label": lit(spatial_en, spatial_fr)}
+    return d, missing
+
+
 # ─────────────────────────── validators reused from the repos ───────────────────────────
 
 def _load_module(name, path):
@@ -769,6 +793,9 @@ def process(ds_id, cfg, taken):
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
     (out / "dcat.json").write_text(json.dumps(res["dcat"], indent=2, ensure_ascii=False) + "\n")
     (out / "mapper.json").write_text(json.dumps(build_mapper(ds_id, m), indent=2, ensure_ascii=False) + "\n")
+    bi, missing = bilingual_dcat(res["dcat"], m["title_fr"], m["description_fr"], m["spatial_label"]["en"], m["spatial_label"]["fr"])
+    (out / "dcat_bilingual.json").write_text(json.dumps(bi, indent=2, ensure_ascii=False) + "\n")  # ready for a bilingual metadata-api; not sent to metadonnees
+    if missing: res.setdefault("minor", []).append(f"mots-clés sans traduction française, à faire valider puis ajouter à keywords_fr.json : {missing}")
     res["samples"] = df
     if not ID_RE.match(ds_id): res.setdefault("blocking", []).append(f"ID {ds_id} non conforme à la convention genre3+espèce3+n°")
     if ds_id in taken: res.setdefault("blocking", []).append(f"ID {ds_id} déjà utilisé dans la BD")
