@@ -287,6 +287,8 @@ ATTR = {
     "body_mass": ("Numeric", "body_mass", "Body mass of the individual", "gram"),
     "technical_replicate": ("Boolean", "technical_replicate", "TRUE if this sample is a technical replicate of another sample of the dataset", None),
     "possible_duplicate_of": ("Text", "possible_duplicate_of", "ID of another sample with nearly identical genotypes (likely the same individual)", None),
+    "publication_code": ("Text", "publication_code", "Code of the sampling site or population as used in the source publication, linking the individual to the tables and figures of the article", None),
+    "biosample_accession": ("Text", "biosample_accession", "Accession number of the sequenced sample in the BioSample database of NCBI (shared with EBI and DDBJ), which links to its public raw sequence data", None),
     "date_of_birth": ("DateTime", "date_of_birth", "Birth date of the individual, expressed in the standard ISO 8601 format YYYY-MM-DD", None),
     "sequenced_molecule": ("Text", "sequenced_molecule", "Sequenced molecule such as DNA or RNA.", None),
     "genotyping_technology": ("Text", "genotyping_technology", "Genotyping technology used to obtain the genotypes: genotyping-by-sequencing, SNP chip, whole genome sequencing, targeted sequencing, targeted SNP assay or RNA sequencing.", None),
@@ -698,7 +700,10 @@ def apply_attributes(ds_id, cfg, df, res):
     ren = {a: b for a, b in spec.get("rename", {}).items() if a in df.columns}
     df = df.rename(columns=ren)
     for a, b in ren.items():
-        if a in extra: extra[b] = extra.pop(a)
+        if a in extra:
+            t = list(extra.pop(a))
+            if t[1] == a: t[1] = b  # the label follows the new name
+            extra[b] = tuple(t)
         if a in entries: entries[b] = entries.pop(a)
     for c, m in spec.get("values", {}).items():
         df[c] = df[c].map(lambda v: m.get(str(v), v) if v is not None and v == v else v)
@@ -706,7 +711,7 @@ def apply_attributes(ds_id, cfg, df, res):
     if "sex" in df.columns:  # sex codes of the vocabulary: female, male, unknown
         df["sex"] = df["sex"].map(lambda v: SEX.get(v.lower(), v) if isinstance(v, str) else v)
     for c, f in spec.get("scale", {}).items():
-        df[c] = pd.to_numeric(df[c], errors="coerce") * f
+        df[c] = (pd.to_numeric(df[c], errors="coerce") * f).round(6)  # no float residue (64.5 kg x 1000 = 64500.00000000001)
     for c in df.columns:
         if c in ATTR: extra.pop(c, None)
     for key, pos in (("types", 0), ("info", 2), ("units", 3)):
@@ -757,6 +762,9 @@ def process(ds_id, cfg, taken):
         res.setdefault("decisions", []).append(f"Pas de positions génomiques : à l'écriture du VCF, tous les marqueurs ont ensuite été placés sur le pseudo-chromosome « {UNMAPPED} », POS = rang du marqueur (sans valeur génomique), l'ancien CHROM (nom du marqueur) dans ID ; un contig par marqueur rendait le chargement quadratique (angang2 : ~30 min au lieu de quelques secondes).")
     df = df.apply(lambda c: c.map(lambda v: v.strip() if isinstance(v, str) else v))  # no leading/trailing spaces in values
     df = df.replace("", pd.NA)
+    for c in df.columns:  # an integer column with missing values becomes float in pandas: write 2001, not 2001.0
+        if pd.api.types.is_float_dtype(df[c]) and df[c].notna().any() and (df[c].dropna() % 1 == 0).all():
+            df[c] = df[c].astype("Int64")
     df.to_csv(out / f"{ds_id}_samples.csv", index=False, encoding="utf-8", na_rep="NA")  # missing values written NA (requester convention)
     (out / "oca.json").write_text(json.dumps(res["oca"], indent=2, ensure_ascii=False) + "\n")
     (out / "dcat.json").write_text(json.dumps(res["dcat"], indent=2, ensure_ascii=False) + "\n")
